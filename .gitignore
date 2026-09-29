@@ -1,0 +1,21 @@
+# Build output
+target/
+node_modules/
+dist/
+coverage/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local.md
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# IDE / OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
