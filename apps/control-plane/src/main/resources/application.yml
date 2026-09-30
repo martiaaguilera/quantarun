@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: quantarun-control-plane
+  datasource:
+    # No defaults for credentials: a missing variable must fail startup rather than silently use a guess.
+    url: ${QUANTARUN_DB_URL}
+    username: ${QUANTARUN_DB_USER}
+    password: ${QUANTARUN_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${QUANTARUN_DB_POOL_SIZE:20}
+  flyway:
+    locations: classpath:db/migration
+  mvc:
+    problemdetails:
+      enabled: true
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+server:
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+  tracing:
+    sampling:
+      probability: 1.0
+
+logging:
+  structured:
+    format:
+      console: ecs

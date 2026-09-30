@@ -1,0 +1,183 @@
+/* Operations-console baseline. The full visual system is designed in Phase 11; this keeps the shell dense,
+   legible and accessible without committing to decoration. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #d9dde3;
+  --text: #1b1f24;
+  --text-muted: #5b6470;
+  --accent: #2a5bd7;
+  --ok: #1e7a45;
+  --ok-bg: #e3f3ea;
+  --bad: #b3261e;
+  --bad-bg: #fbe7e5;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418;
+    --surface: #181c21;
+    --border: #2c323a;
+    --text: #e4e7eb;
+    --text-muted: #98a1ad;
+    --accent: #7ea2ff;
+    --ok: #6fd39a;
+    --ok-bg: #1b3326;
+    --bad: #ff8a80;
+    --bad-bg: #3a1d1b;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--font-sans);
+}
+
+h1 {
+  font-size: 1.25rem;
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.75rem;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  grid-template-rows: 48px 1fr;
+  min-height: 100vh;
+}
+
+.shell__header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0 1rem;
+  line-height: 48px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.shell__product {
+  font-weight: 600;
+}
+
+.shell__tagline {
+  color: var(--text-muted);
+}
+
+.shell__nav {
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0.75rem 0;
+}
+
+.shell__nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shell__nav a {
+  display: block;
+  padding: 0.35rem 1rem;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.shell__nav a[aria-current='page'] {
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.shell__nav a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.shell__main {
+  padding: 1.25rem 1.5rem;
+  min-width: 0;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1rem;
+  max-width: 900px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table thead th {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.data-table tbody th {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.status {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.status--up {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.status--down {
+  color: var(--bad);
+  background: var(--bad-bg);
+}
+
+.status--muted {
+  color: var(--text-muted);
+}
+
+@media (max-width: 720px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: 48px auto 1fr;
+  }
+
+  .shell__nav {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}

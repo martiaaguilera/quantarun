@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: quantarun-worker
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    # Draining finishes in-flight attempts; the platform's stop grace period must be at least this long.
+    timeout-per-shutdown-phase: 30s
+
+server:
+  port: ${QUANTARUN_WORKER_PORT:8081}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+
+logging:
+  structured:
+    format:
+      console: ecs

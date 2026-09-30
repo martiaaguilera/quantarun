@@ -223,6 +223,8 @@ See `THREAT_MODEL.md`.
 
 A phase is complete only when its criteria are met *and verified by running them*.
 
+**Progress:** Phase 0 done (2026-09-30). Phase 1 done (2026-09-30): verified locally with `./mvnw verify`, `npm run check` and `docker compose up --build --wait`, probed through nginx. CI is defined but has not run yet, because there is no GitHub remote.
+
 | Phase | Acceptance criteria |
 |---|---|
 | 0 Research & architecture | RESEARCH, SPEC, ARCHITECTURE, INVARIANTS (planned tests), ADRs, CLAUDE.md exist and agree with each other |

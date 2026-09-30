@@ -19,3 +19,10 @@ coverage/
 .vscode/
 .DS_Store
 Thumbs.db
+target/
+
+# Eclipse JDT language server metadata
+.project
+.classpath
+.settings/
+.factorypath
