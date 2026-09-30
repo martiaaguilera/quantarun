@@ -1,58 +1,66 @@
-# ForgeFlow
+# QuantaRun
 
-Distributed job-processing platform: clients submit jobs over a REST API, workers claim and execute them
-with leases, heartbeats, retries with backoff and a dead-letter queue; a React dashboard shows jobs,
-workers and metrics. Portfolio project by Martí Aguilera (GitHub/LinkedIn: `martiaaguilera`).
+OpenTelemetry-native control plane for scheduling, executing, recovering, replaying and stress-testing
+distributed AI workloads. It is a portfolio project by Martí Aguilera (github.com/martiaaguilera). It runs locally
+at zero cost, with no API keys.
 
-## Stack
+**Source of truth:**
+- The owner's brief: `docs/brief/PROJECT_BRIEF.md` (+ `PROJECT_BRIEF_v1_ADDITIONS.md`).
+- The semantics: `docs/SPEC.md`.
+- How it is built: `docs/ARCHITECTURE.md`.
+- Invariants and their proofs: `docs/INVARIANTS.md`.
+- Decisions: `docs/adr/`.
+- Status and discoveries: `docs/ENGINEERING_LOG.md`.
 
-- Backend: Java 21, Spring Boot 4.1.x (Framework 7, Security 7, Hibernate 7, Jackson 3), Maven wrapper
-- Data: PostgreSQL (source of truth, Flyway migrations), Redis (ephemeral, justified uses only)
-- Frontend: React + TypeScript (strict) + Vite
-- Ops: Docker Compose, Testcontainers, Micrometer/Actuator, GitHub Actions
+Read the relevant ones before changing behaviour.
 
-## Repository layout
-
-The layout is planned until scaffolding lands. Update this section when it changes.
+## Layout
 
 ```
-backend/            Spring Boot app, packages by feature (jobs, workers, scheduling, ...)
-frontend/           React + Vite app
-docs/               architecture, ADRs (docs/adr/), runbooks
-docker-compose.yml  local stack
-.claude/skills/     forgeflow-engineering (binding rules) + selected Spring Boot 4 skills
+apps/control-plane     Spring Boot 4.1, Java 25 — modular monolith (Spring Modulith), explicit SQL via JdbcClient
+apps/worker            Spring Boot worker process — HTTP only, no DB access (ADR-0005)
+apps/worker-protocol   Java records shared by both sides of the worker HTTP protocol
+apps/web               React 19 + TypeScript (strict) + Vite 8 operations console
+infra/                 compose support files (otel collector, prometheus, ...)
+benchmarks/  scripts/  docs/
 ```
 
 ## Commands
 
-These are the intended commands. Verify they exist before relying on them.
-
 ```
-cd backend && ./mvnw verify                  # compile + unit + integration tests (needs Docker)
-cd backend && ./mvnw -Dtest=ClassName test   # single test class
-cd frontend && npm ci && npm run build       # production build
-cd frontend && npm run typecheck && npm test
-docker compose up -d                         # full local stack
+./mvnw verify                          # all Java modules: format check, compile, unit + Testcontainers tests (Docker required)
+./mvnw -pl apps/control-plane -am test -Dtest=ClassName
+./mvnw spotless:apply                  # format Java
+cd apps/web && npm ci && npm run check # typecheck + lint + test + build
+docker compose up --build              # full local stack
 ```
 
-## Rules
+## Non-negotiable rules
 
-- Binding engineering rules: `.claude/skills/forgeflow-engineering/SKILL.md`. Load it before any code change.
-- Invariants: PostgreSQL is the source of truth; delivery is at-least-once; every job state change is a
-  conditional write validated against the transition table; no job execution or network I/O inside a DB
-  transaction; schema changes only through new Flyway migrations.
-- Naming: Java packages `io.github.martiaaguilera.forgeflow.<module>`; SQL snake_case; REST `/api/v1/<plural-kebab>`;
-  migrations `V<n>__<description>.sql`; tests `method_condition_expectedOutcome`.
-- Commits: Conventional Commits (`feat(jobs): ...`), one coherent change each. Author: Martí Aguilera.
-  Never falsify authorship or dates.
+- **Correctness over speed.** Every state change is a conditional write validated by `JobStatus`; the affected-row
+  count is the result. Invariants I1–I16 in `docs/INVARIANTS.md` hold. Add the test when you add the mechanism.
+- **Schema only through new Flyway migrations.** No generated DDL; never edit an applied migration.
+- **No network I/O, workload execution or sleeps inside a DB transaction.** Keep transactions short, and lock jobs
+  before workers (in id order).
+- **Concurrency is tested against real PostgreSQL (Testcontainers).** Never mock the DB for locking semantics.
+- **Never weaken a test to make it pass.** If an invariant test fails, fix the design and log it in ENGINEERING_LOG.
+- **No arbitrary code execution.** Workloads are registered built-in executors; the HTTP workload keeps SSRF guards.
+- **No new infrastructure** (Redis, Kafka, brokers, Kubernetes) without a measured need recorded in an ADR.
+- **Benchmark numbers must be measured** and recorded with date, commit, hardware and command. Otherwise write
+  "not measured".
+- **TypeScript `strict` stays on**, with no `any` unless a comment explains why.
+- **Code style:** no Service/ServiceImpl pairs, factories, managers or utils without a real reason. Records,
+  constructor injection, package-private by default. Comments explain *why*, never *what*.
+- **Architecture changes update the docs** (ARCHITECTURE, an ADR where it matters) in the same commit.
+- **Before declaring done,** run `./mvnw verify`, plus `npm run check` for web changes, and exercise the change for
+  real (API call, compose stack). Report anything that could not run.
 
-## Definition of done
+## Git
 
-1. The backend build `./mvnw verify` passes. For frontend changes, the build, typecheck and tests also pass.
-2. New behaviour has tests. SQL, locking and transaction code is tested against real PostgreSQL. Concurrency code has a concurrent test.
-3. LSP diagnostics show no new errors or warnings.
-4. Review agents have run for milestone-sized changes, and their findings are fixed or consciously deferred.
-5. Docs or an ADR are updated when behaviour, configuration or architecture changed.
-6. Everything claimed as working was actually run: migrations, `docker compose up`, API calls.
+Conventional Commits (`feat(scheduler): ...`), coherent commits, real history. The author is Martí Aguilera.
+Never fake dates or authorship.
 
-If a step could not run (for example, Docker is unavailable), say so explicitly and do not claim success.
+## Workflow
+
+Load `.claude/skills/quantarun-engineering` for any code change. Use `/feature-dev` for phase-sized features,
+the pr-review-toolkit agents after milestones, and `/claude-security` at the security checkpoints in the skill.

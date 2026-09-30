@@ -9,7 +9,7 @@ Only `SKILL.md`, `examples/` and `templates/` were copied. The Codex-only `agent
 files were omitted. Cross-links to upstream skills that were not selected (for example
 `../resilience-retry/SKILL.md`, `../event-driven-messaging/SKILL.md`) intentionally dangle.
 
-| Skill | Why ForgeFlow needs it |
+| Skill | Why QuantaRun uses it |
 |---|---|
 | rest-api-conventions | REST resources, status codes, pagination caps, Boot 4 API versioning |
 | problem-details-rfc9457 | Single RFC 9457 error contract, incl. security-filter 401/403 |
@@ -23,7 +23,7 @@ files were omitted. Cross-links to upstream skills that were not selected (for e
 | resilience-retry | Framework 7 core @Retryable/@ConcurrencyLimit for provider adapters (not job retries) |
 | container-native-deployment | Layered, non-root JVM images for Docker Compose |
 
-Where these skills conflict with ForgeFlow decisions, `forgeflow-engineering/SKILL.md` wins.
+Where these skills conflict with QuantaRun decisions, `quantarun-engineering/SKILL.md` wins.
 Upstream content is never edited in place; deviations are recorded there instead.
 
 Considered and **not** selected: spring-data-jpa (QuantaRun uses explicit SQL, see ADR-0003),

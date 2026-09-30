@@ -1,12 +1,16 @@
-# ForgeFlow security rules
+# QuantaRun security rules
 
-- Job payloads, job type names and handler parameters are attacker-controlled. They must never reach a
-  shell, `Runtime.exec`/`ProcessBuilder`, SpEL/expression evaluation, `Class.forName`/reflection, template
-  rendering, or Java/polymorphic JSON deserialization. Handlers are resolved from a fixed registry by name.
-- API keys: stored only as hashes, compared in constant time, returned once at creation, never logged or
-  included in errors, metrics tags or traces.
-- Every job/worker/DLQ endpoint must authorize the caller before reading or mutating a job; a job ID alone
-  is not authorization.
-- Redis values must not use Jackson default typing; Redis loss must never cause a job to run twice or be lost.
-- Actuator: only health/info are public. No `env`, `configprops`, `heapdump` exposure.
-- Frontend must not render API data with `dangerouslySetInnerHTML`.
+- Job payloads, workload type names and checkpoint data are attacker-controlled. They must never reach a shell,
+  `Runtime.exec`/`ProcessBuilder`, expression evaluation (SpEL), reflection/`Class.forName`, template rendering or
+  Java/polymorphic deserialization. Workload executors come from a fixed registry.
+- The `http` workload must resolve DNS and reject loopback, private, link-local and metadata addresses (incl. IPv6
+  and redirects) unless they are explicitly allowlisted.
+- Project API keys: 256-bit random, stored only as hashes, compared in constant time, shown once, never logged or
+  put in errors, metric tags or traces. Worker tokens get the same treatment.
+- Every job, attempt, checkpoint and decision endpoint authorizes the caller's project. A UUID alone is not
+  authorization.
+- Worker protocol writes must be fenced by attempt id + worker id. A worker must not be able to act on another
+  worker's attempt.
+- Chaos endpoints act only on QuantaRun's own registered workers, behind an explicit profile flag. They never run
+  host commands.
+- Actuator: only health/info are public. Size limits apply to request bodies, payloads and checkpoint data.
