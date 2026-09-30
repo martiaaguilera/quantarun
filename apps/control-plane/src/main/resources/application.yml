@@ -22,6 +22,18 @@ spring:
 server:
   shutdown: graceful
 
+quantarun:
+  security:
+    # Operator credential; required, at least 32 characters (see SecurityProperties).
+    admin-token: ${QUANTARUN_ADMIN_TOKEN}
+  api:
+    max-request-body: 64KB
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  paths-to-match: /api/**
+
 management:
   endpoints:
     web:

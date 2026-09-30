@@ -223,7 +223,7 @@ See `THREAT_MODEL.md`.
 
 A phase is complete only when its criteria are met *and verified by running them*.
 
-**Progress:** Phase 0 done (2026-09-30). Phase 1 done (2026-09-30): verified locally with `./mvnw verify`, `npm run check` and `docker compose up --build --wait`, probed through nginx. CI is defined but has not run yet, because there is no GitHub remote.
+**Progress:** Phase 0 done (2026-09-30). Phase 1 done (2026-09-30): verified locally with `./mvnw verify`, `npm run check` and `docker compose up --build --wait`, probed through nginx. CI is defined but has not run yet, because there is no GitHub remote. Phase 2 done (2026-09-30): jobs API, state machine, idempotent submission, cancellation, project API keys and OpenAPI, all verified by 63 tests on real PostgreSQL.
 
 | Phase | Acceptance criteria |
 |---|---|

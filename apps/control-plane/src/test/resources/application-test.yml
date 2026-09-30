@@ -1,0 +1,3 @@
+quantarun:
+  security:
+    admin-token: test-admin-token-0123456789abcdef0123

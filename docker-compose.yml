@@ -29,6 +29,7 @@ services:
       QUANTARUN_DB_URL: jdbc:postgresql://postgres:5432/${QUANTARUN_DB_NAME:-quantarun}
       QUANTARUN_DB_USER: ${QUANTARUN_DB_USER}
       QUANTARUN_DB_PASSWORD: ${QUANTARUN_DB_PASSWORD}
+      QUANTARUN_ADMIN_TOKEN: ${QUANTARUN_ADMIN_TOKEN:?set QUANTARUN_ADMIN_TOKEN in .env}
     depends_on:
       postgres:
         condition: service_healthy
