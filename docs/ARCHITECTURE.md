@@ -103,13 +103,21 @@ heartbeats in a separate row removes that hot-row contention.
 
 ## 5. Worker protocol
 
-Workers authenticate with a worker token and speak JSON over HTTP:
-1. `POST register`: capacity, labels and version. Returns the worker id and timing configuration.
+Workers speak JSON over HTTP under `/worker-api/v1`, a namespace separate from the client API so the two credential
+families can never overlap (see ENGINEERING_LOG). Registration presents the shared bootstrap token and receives a
+**per-worker credential** (`qw_...`, stored as a SHA-256 hash). Every later call uses that credential, and the control
+plane acts on the authenticated worker id, never a client-supplied one.
+1. `POST register`: capacity, labels and version. Returns the worker id, its credential and the timing configuration.
 2. `POST heartbeat` every 3 s, carrying the ids of the worker's active attempts. The response contains
    cancel requests and leases that are no longer valid, which the worker must stop immediately.
-3. `POST claim`: long-polls for ASSIGNED attempts on this worker and returns the payload plus the last
+3. `POST deregister`: on graceful shutdown. Leaves immediately with nothing reserved, otherwise drains first.
+4. `POST claim`: long-polls for ASSIGNED attempts on this worker and returns the payload plus the last
    checkpoint.
-4. `POST attempts/{id}/checkpoints` and `POST attempts/{id}/report`: fenced by attempt id + worker id.
+5. `POST attempts/{id}/checkpoints` and `POST attempts/{id}/report`: fenced by attempt id + worker id.
+
+Liveness: health (HEALTHY → LATE → OFFLINE) is derived from heartbeat age against the database clock. The liveness
+monitor retires silent registrations, but never during the startup grace period after a control-plane restart.
+A retired registration is never revived; the process registers again under a new id.
 
 Delivery is **at-least-once execution, at-most-once committed success**. A worker that was partitioned may
 still finish work after its lease was reclaimed, but its report is rejected. Built-in workloads that cause

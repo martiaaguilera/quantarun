@@ -9,6 +9,7 @@ WORKDIR /src
 # Copy build descriptors first so dependency resolution stays cached until a pom changes.
 COPY mvnw pom.xml ./
 COPY .mvn .mvn
+COPY apps/worker-protocol/pom.xml apps/worker-protocol/pom.xml
 COPY apps/control-plane/pom.xml apps/control-plane/pom.xml
 COPY apps/worker/pom.xml apps/worker/pom.xml
 RUN --mount=type=cache,target=/root/.m2 \

@@ -198,7 +198,7 @@ Reported metrics:
 These are resources, not a contract. The contract is the generated OpenAPI document.
 - `/api/v1/jobs`: submit, list/filter, get, cancel, revive; plus attempts, events, decisions and checkpoints for a job.
 - `/api/v1/workers`: list, get, drain (operator).
-- `/api/v1/worker-protocol/...`: register, heartbeat, claim, report, checkpoint. These use worker credentials, not project keys.
+- `/worker-api/v1/...`: register, heartbeat, claim, report, checkpoint. These use worker credentials, not project keys.
 - `/api/v1/projects`, `/api/v1/projects/{id}/api-keys`: admin only.
 - `/api/v1/scheduler`: active policy, recent decisions, unschedulable jobs.
 - `/api/v1/simulations`: run a scenario against several policies; fetch the results.
@@ -223,7 +223,7 @@ See `THREAT_MODEL.md`.
 
 A phase is complete only when its criteria are met *and verified by running them*.
 
-**Progress:** Phase 0 done (2026-09-30). Phase 1 done (2026-09-30): verified locally with `./mvnw verify`, `npm run check` and `docker compose up --build --wait`, probed through nginx. CI is defined but has not run yet, because there is no GitHub remote. Phase 2 done (2026-09-30): jobs API, state machine, idempotent submission, cancellation, project API keys and OpenAPI, all verified by 63 tests on real PostgreSQL.
+**Progress:** Phase 0 done (2026-09-30). Phase 1 done (2026-09-30): verified locally with `./mvnw verify`, `npm run check` and `docker compose up --build --wait`, probed through nginx. CI is defined but has not run yet, because there is no GitHub remote. Phase 2 done (2026-09-30): jobs API, state machine, idempotent submission, cancellation, project API keys and OpenAPI, all verified by 63 tests on real PostgreSQL. Phase 3 done (2026-10-01): worker registration with per-worker credentials, heartbeats, derived health, draining, deregistration, retirement of silent workers with a startup grace period, capacity CHECK guards, and three heterogeneous workers in compose. Verified by 96 tests and an end-to-end kill/stop/restart run.
 
 | Phase | Acceptance criteria |
 |---|---|

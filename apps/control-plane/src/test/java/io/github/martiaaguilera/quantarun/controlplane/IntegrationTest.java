@@ -19,4 +19,5 @@ import org.springframework.test.context.ActiveProfiles;
 public @interface IntegrationTest {
 
     String ADMIN_TOKEN = "test-admin-token-0123456789abcdef0123";
+    String WORKER_BOOTSTRAP_TOKEN = "test-worker-bootstrap-token-0123456789";
 }

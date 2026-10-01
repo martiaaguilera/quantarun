@@ -2,6 +2,35 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-01 — A control-plane restart looked like the death of every worker
+End-to-end test: restart the control plane while three healthy workers keep running. On startup the liveness monitor
+retired **all** of them, and each had to register again under a new id. The cause: while the control plane is down
+nobody records heartbeats, so on startup every `last_seen_at` is older than the offline threshold, and an outage of the
+observer is indistinguishable from an outage of the observed. Once leases exist (Phase 5), the same mistake would
+declare every running attempt lost and re-execute healthy work. The fix is a startup grace period
+(`quantarun.workers.startup-grace`, default = offline threshold) during which nothing is retired, which gives every live
+worker time to heartbeat again. Verified end to end: after a restart the three workers keep the same ids and none is
+retired. Regression test: `WorkerRetirementGraceTest`. **The Phase 5 lease reaper needs the same grace.**
+
+## 2026-10-01 — Path-based security decisions were fragile; separate namespaces instead
+The first version had the project-key filter on `/api/*` skip requests whose path started with the worker-protocol
+prefix. Two problems surfaced in review. First, `getRequestURI()` is not normalised, so
+`/api/v1/worker-protocol/../jobs` would have skipped project authentication and still been routed to `/api/v1/jobs`.
+Second, `getServletPath()` (normalised in Tomcat) is empty under MockMvc, so tests would not exercise the real behaviour.
+Fix: the worker protocol moved to its own prefix, `/worker-api/v1`. The servlet container maps each filter by URL
+pattern on the normalised path, so the two credential families cannot overlap. Inside the worker filter, the
+*credential type* decides what a call may do (the bootstrap token can only register; a worker credential acts only as
+its own worker), never the path.
+
+## 2026-10-01 — Boot 4 notes: RestClient module, OTLP defaults, an SSRF hook
+- `RestClient.Builder` auto-configuration lives in `spring-boot-starter-restclient` in Boot 4. Without it there is no
+  builder bean.
+- `spring-boot-starter-opentelemetry` exports OTLP metrics to `localhost:4318` by default, and every node logs
+  connection errors when no collector runs. Export is now opt-in (`QUANTARUN_OTLP_ENABLED`) until Phase 10.
+- `HttpClientSettings.withInetAddressFilter(...)` (Boot 4.1) filters resolved addresses at connect time. It is the
+  natural place for the HTTP workload's SSRF guard: checking after DNS resolution defeats DNS-rebinding tricks that a
+  hostname check misses.
+
 ## 2026-09-30 — Jackson 3 changed a default: missing primitives are now errors
 Every job submission that omitted the optional `accelerators` field failed with 400 "Failed to read request".
 An isolated reproduction showed the cause: Jackson 3 enables `FAIL_ON_NULL_FOR_PRIMITIVES` by default, so a

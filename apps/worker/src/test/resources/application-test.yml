@@ -1,0 +1,6 @@
+quantarun:
+  worker:
+    # Nothing listens here: the health test must not depend on a running control plane.
+    control-plane-url: http://127.0.0.1:9
+    bootstrap-token: test-worker-bootstrap-token-0123456789
+    name: test-worker

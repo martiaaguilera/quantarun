@@ -1,9 +1,9 @@
 package io.github.martiaaguilera.quantarun.controlplane.security;
 
-import io.github.martiaaguilera.quantarun.controlplane.security.internal.ApiKeyFormat;
 import io.github.martiaaguilera.quantarun.controlplane.security.internal.ApiKeyRepository;
 import io.github.martiaaguilera.quantarun.controlplane.security.internal.ApiKeyRepository.KeySummary;
 import io.github.martiaaguilera.quantarun.controlplane.web.ApiException;
+import io.github.martiaaguilera.quantarun.controlplane.web.SecretTokens;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -17,6 +17,8 @@ public class ApiKeys {
 
     public record IssuedKey(KeySummary key, String plaintext) {}
 
+    private static final SecretTokens API_KEYS = new SecretTokens("qr");
+
     private final ApiKeyRepository repository;
 
     ApiKeys(ApiKeyRepository repository) {
@@ -24,7 +26,7 @@ public class ApiKeys {
     }
 
     public IssuedKey issue(UUID projectId, String label) {
-        var generated = ApiKeyFormat.generate();
+        var generated = API_KEYS.generate();
         try {
             var summary = repository.insert(projectId, generated.prefix(), generated.hash(), label);
             return new IssuedKey(summary, generated.plaintext());
@@ -46,9 +48,9 @@ public class ApiKeys {
 
     /** Returns the project owning a valid, unrevoked key. Any malformed or unknown key is simply rejected. */
     Optional<UUID> verify(String presented) {
-        return ApiKeyFormat.prefixOf(presented)
+        return API_KEYS.prefixOf(presented)
                 .flatMap(repository::findActiveByPrefix)
-                .filter(stored -> ApiKeyFormat.matches(presented, stored.secretHash()))
+                .filter(stored -> SecretTokens.matches(presented, stored.secretHash()))
                 .map(ApiKeyRepository.StoredKey::projectId);
     }
 }

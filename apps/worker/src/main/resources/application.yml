@@ -12,6 +12,19 @@ server:
   port: ${QUANTARUN_WORKER_PORT:8081}
   shutdown: graceful
 
+quantarun:
+  worker:
+    control-plane-url: ${QUANTARUN_CONTROL_PLANE_URL:http://localhost:8080}
+    # Required, no default: a worker without it must not start and silently fail to register.
+    bootstrap-token: ${QUANTARUN_WORKER_BOOTSTRAP_TOKEN}
+    name: ${QUANTARUN_WORKER_NAME:worker}
+    labels: ${QUANTARUN_WORKER_LABELS:}
+    capacity:
+      cpu-millis: ${QUANTARUN_WORKER_CPU_MILLIS:2000}
+      memory-mib: ${QUANTARUN_WORKER_MEMORY_MIB:2048}
+      accelerators: ${QUANTARUN_WORKER_ACCELERATORS:0}
+      slots: ${QUANTARUN_WORKER_SLOTS:2}
+
 management:
   endpoints:
     web:
@@ -21,9 +34,20 @@ management:
     health:
       probes:
         enabled: true
+      group:
+        readiness:
+          include: readinessState,registration
   tracing:
     sampling:
       probability: 1.0
+  # OTLP export is opt-in until the collector joins the stack (Phase 10); otherwise every node logs connection errors.
+  otlp:
+    metrics:
+      export:
+        enabled: ${QUANTARUN_OTLP_ENABLED:false}
+    logging:
+      export:
+        enabled: ${QUANTARUN_OTLP_ENABLED:false}
 
 logging:
   structured:

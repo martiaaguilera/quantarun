@@ -4,10 +4,11 @@ A local-first control plane for scheduling, executing, recovering, replaying and
 workloads. It uses PostgreSQL for coordination and OpenTelemetry for visibility, and runs at zero cost with no
 API keys.
 
-> **Status: early development (Phase 2 of 15).** Implemented so far: the job API with a centrally enforced state
+> **Status: early development (Phase 3 of 15).** Implemented so far: the job API with a centrally enforced state
 > machine, idempotent submission (proven with 500 concurrent duplicates on real PostgreSQL), cooperative
-> cancellation, project-scoped API keys, an OpenAPI document, and the running skeleton (control plane, worker, web
-> console, CI). Workers, scheduling, leases, retries and simulation are **not implemented yet**. This README only
+> cancellation, project-scoped API keys and OpenAPI. On the fleet side: three heterogeneous workers that register with
+> per-worker credentials, heartbeat, drain and deregister; silent ones are retired, with a grace period after a
+> control-plane restart. Scheduling, leases, retries and simulation are **not implemented yet**. This README only
 > describes what exists.
 
 ## What it will be

@@ -14,7 +14,7 @@ class WebConfiguration {
     FilterRegistrationBean<RequestBodyLimitFilter> requestBodyLimitFilter(
             @Value("${quantarun.api.max-request-body:64KB}") DataSize maxRequestBody) {
         var registration = new FilterRegistrationBean<>(new RequestBodyLimitFilter(maxRequestBody.toBytes()));
-        registration.addUrlPatterns("/api/*");
+        registration.addUrlPatterns("/api/*", "/worker-api/*");
         // Runs before authentication, so an unauthenticated caller cannot make the server read a huge body either.
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
         return registration;

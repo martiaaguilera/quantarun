@@ -15,10 +15,19 @@
     <description>Executes attempts assigned by the control plane. Talks HTTP only; has no database access (ADR-0005).</description>
 
     <dependencies>
+        <dependency>
+            <groupId>io.github.martiaaguilera.quantarun</groupId>
+            <artifactId>worker-protocol</artifactId>
+        </dependency>
         <!-- webmvc serves only the actuator endpoints (health, prometheus); the worker exposes no business API. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <!-- RestClient for the worker protocol (in Boot 4 its auto-configuration is a separate module). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-restclient</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -46,6 +55,11 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-restclient-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -28,6 +28,9 @@ quantarun:
     admin-token: ${QUANTARUN_ADMIN_TOKEN}
   api:
     max-request-body: 64KB
+  workers:
+    # Shared secret workers present only to register (min. 32 chars); later calls use per-worker credentials.
+    bootstrap-token: ${QUANTARUN_WORKER_BOOTSTRAP_TOKEN}
 
 springdoc:
   api-docs:
@@ -49,6 +52,14 @@ management:
   tracing:
     sampling:
       probability: 1.0
+  # OTLP export is opt-in until the collector joins the stack (Phase 10); otherwise every node logs connection errors.
+  otlp:
+    metrics:
+      export:
+        enabled: ${QUANTARUN_OTLP_ENABLED:false}
+    logging:
+      export:
+        enabled: ${QUANTARUN_OTLP_ENABLED:false}
 
 logging:
   structured:

@@ -2,6 +2,30 @@
 # Configuration comes from .env (copy .env.example). Nothing here requires a paid service or an API key.
 name: quantarun
 
+x-worker-env: &worker-env
+  QUANTARUN_CONTROL_PLANE_URL: http://control-plane:8080
+  QUANTARUN_WORKER_BOOTSTRAP_TOKEN: ${QUANTARUN_WORKER_BOOTSTRAP_TOKEN}
+
+x-worker: &worker
+  build:
+    context: .
+    dockerfile: infra/docker/java-app.Dockerfile
+    args:
+      APP_MODULE: worker
+  image: quantarun-worker
+  depends_on:
+    control-plane:
+      condition: service_healthy
+  # Graceful stop lets the worker deregister; keep it above spring.lifecycle.timeout-per-shutdown-phase.
+  stop_grace_period: 40s
+  healthcheck:
+    # Readiness, not liveness: a worker counts as up only once it is registered with the control plane.
+    test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health/readiness | grep -q UP"]
+    interval: 3s
+    timeout: 3s
+    retries: 40
+    start_period: 10s
+
 services:
   postgres:
     image: postgres:18.6-alpine
@@ -30,6 +54,7 @@ services:
       QUANTARUN_DB_USER: ${QUANTARUN_DB_USER}
       QUANTARUN_DB_PASSWORD: ${QUANTARUN_DB_PASSWORD}
       QUANTARUN_ADMIN_TOKEN: ${QUANTARUN_ADMIN_TOKEN:?set QUANTARUN_ADMIN_TOKEN in .env}
+      QUANTARUN_WORKER_BOOTSTRAP_TOKEN: ${QUANTARUN_WORKER_BOOTSTRAP_TOKEN:?set QUANTARUN_WORKER_BOOTSTRAP_TOKEN in .env}
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,21 +67,39 @@ services:
       retries: 40
       start_period: 10s
 
-  worker:
-    build:
-      context: .
-      dockerfile: infra/docker/java-app.Dockerfile
-      args:
-        APP_MODULE: worker
-    depends_on:
-      control-plane:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health/liveness | grep -q UP"]
-      interval: 3s
-      timeout: 3s
-      retries: 40
-      start_period: 10s
+  # Three deliberately different workers so placement decisions are visible. Accelerators are simulated slots.
+  worker-cpu:
+    <<: *worker
+    environment:
+      <<: *worker-env
+      QUANTARUN_WORKER_NAME: worker-cpu
+      QUANTARUN_WORKER_CPU_MILLIS: 4000
+      QUANTARUN_WORKER_MEMORY_MIB: 8192
+      QUANTARUN_WORKER_ACCELERATORS: 0
+      QUANTARUN_WORKER_SLOTS: 4
+      QUANTARUN_WORKER_LABELS: ""
+
+  worker-mixed:
+    <<: *worker
+    environment:
+      <<: *worker-env
+      QUANTARUN_WORKER_NAME: worker-mixed
+      QUANTARUN_WORKER_CPU_MILLIS: 8000
+      QUANTARUN_WORKER_MEMORY_MIB: 16384
+      QUANTARUN_WORKER_ACCELERATORS: 1
+      QUANTARUN_WORKER_SLOTS: 4
+      QUANTARUN_WORKER_LABELS: cuda
+
+  worker-accel:
+    <<: *worker
+    environment:
+      <<: *worker-env
+      QUANTARUN_WORKER_NAME: worker-accel
+      QUANTARUN_WORKER_CPU_MILLIS: 8000
+      QUANTARUN_WORKER_MEMORY_MIB: 32768
+      QUANTARUN_WORKER_ACCELERATORS: 2
+      QUANTARUN_WORKER_SLOTS: 2
+      QUANTARUN_WORKER_LABELS: cuda,large-model
 
   web:
     build:

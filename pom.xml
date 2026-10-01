@@ -26,6 +26,7 @@
     </developers>
 
     <modules>
+        <module>apps/worker-protocol</module>
         <module>apps/control-plane</module>
         <module>apps/worker</module>
     </modules>
@@ -46,6 +47,11 @@
                 <version>${spring-modulith.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.github.martiaaguilera.quantarun</groupId>
+                <artifactId>worker-protocol</artifactId>
+                <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.springdoc</groupId>

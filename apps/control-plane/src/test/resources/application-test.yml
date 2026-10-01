@@ -1,3 +1,7 @@
 quantarun:
   security:
     admin-token: test-admin-token-0123456789abcdef0123
+  workers:
+    bootstrap-token: test-worker-bootstrap-token-0123456789
+    liveness-monitor-enabled: false
+    startup-grace: 0s
