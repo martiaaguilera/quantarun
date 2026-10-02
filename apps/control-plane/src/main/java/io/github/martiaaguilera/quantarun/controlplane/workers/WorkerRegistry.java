@@ -56,7 +56,19 @@ public class WorkerRegistry {
      * A retired registration (OFFLINE or DEREGISTERED) is answered with 409 and must register again. Accepting its
      * heartbeat would let a worker that was presumed dead resume work that may already have been recovered.
      */
-    public WorkerProtocol.HeartbeatResponse heartbeat(UUID workerId, List<UUID> activeAttemptIds) {
+    public WorkerProtocol.WorkerLifecycleView heartbeat(UUID workerId) {
+        var lifecycle = requireLive(workerId);
+        workers.recordHeartbeat(workerId);
+        return lifecycle == WorkerLifecycle.DRAINING
+                ? WorkerProtocol.WorkerLifecycleView.DRAINING
+                : WorkerProtocol.WorkerLifecycleView.ACTIVE;
+    }
+
+    /**
+     * Fences retired registrations out of every worker write (invariant I11): an OFFLINE worker was presumed dead and
+     * its attempts are being, or were, recovered, so it may not claim, renew or report as that identity again.
+     */
+    public WorkerLifecycle requireLive(UUID workerId) {
         var worker = workers.findById(workerId).orElseThrow(() -> new WorkerNotFoundException(workerId));
         if (!worker.lifecycle().isLive()) {
             throw new ApiException(
@@ -64,13 +76,7 @@ public class WorkerRegistry {
                     "WORKER_NOT_ACTIVE",
                     "Worker " + workerId + " is " + worker.lifecycle() + "; register again.");
         }
-        workers.recordHeartbeat(workerId);
-        var view = worker.lifecycle() == WorkerLifecycle.DRAINING
-                ? WorkerProtocol.WorkerLifecycleView.DRAINING
-                : WorkerProtocol.WorkerLifecycleView.ACTIVE;
-        // Attempts do not exist until the scheduler (Phase 4) and leases (Phase 5); until then a worker never holds
-        // one, so there is truthfully nothing to cancel or revoke.
-        return new WorkerProtocol.HeartbeatResponse(view, List.of(), List.of());
+        return worker.lifecycle();
     }
 
     public WorkerLifecycle deregister(UUID workerId) {

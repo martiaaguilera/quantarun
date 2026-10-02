@@ -8,6 +8,7 @@ import io.github.martiaaguilera.quantarun.controlplane.jobs.WorkloadType;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
@@ -110,6 +111,43 @@ public class JobRepository {
                 .param("limit", limit)
                 .query(jobMapper)
                 .list();
+    }
+
+    /** Row lock on a job; callers that also lock its attempt must have locked the attempt first. */
+    public Optional<Job> lockById(UUID id) {
+        return jdbc.sql("SELECT " + COLUMNS + " FROM jobs WHERE id = :id FOR UPDATE")
+                .param("id", id)
+                .query(jobMapper)
+                .optional();
+    }
+
+    /**
+     * Moves a locked job on after one of its attempts ended. A retry becomes runnable again after {@code retryDelay},
+     * measured on the database clock, and its previous scheduling verdict is cleared.
+     */
+    public void applyAttemptOutcome(UUID id, JobStatus current, JobStatus next, @Nullable Duration retryDelay) {
+        current.requireTransitionTo(next);
+        var updated = jdbc.sql("""
+                        UPDATE jobs
+                        SET status = :next,
+                            updated_at = now(),
+                            finished_at = CASE WHEN :final THEN now() END,
+                            available_at = CASE WHEN :next = 'RETRY_WAIT'
+                                                THEN now() + make_interval(secs => :delaySeconds)
+                                                ELSE available_at END,
+                            scheduling_outcome = CASE WHEN :next = 'RETRY_WAIT' THEN NULL ELSE scheduling_outcome END,
+                            scheduling_reason = CASE WHEN :next = 'RETRY_WAIT' THEN NULL ELSE scheduling_reason END
+                        WHERE id = :id AND status = :current
+                        """)
+                .param("next", next.name())
+                .param("final", next.isFinal())
+                .param("delaySeconds", retryDelay == null ? 0.0 : retryDelay.toMillis() / 1000.0)
+                .param("id", id)
+                .param("current", current.name())
+                .update();
+        if (updated != 1) {
+            throw new IllegalStateException("Job " + id + " was not " + current + " while its row was locked");
+        }
     }
 
     /** Keyset pagination on the time-ordered id: stable under concurrent inserts, no OFFSET scans. */

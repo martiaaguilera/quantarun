@@ -5,6 +5,8 @@ quantarun:
     bootstrap-token: test-worker-bootstrap-token-0123456789
     liveness-monitor-enabled: false
     startup-grace: 0s
+  reliability:
+    lease-reaper-enabled: false
   scheduler:
     # Tests drive SchedulingCycle directly; background loops would race them.
     enabled: false

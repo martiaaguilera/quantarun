@@ -8,6 +8,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -66,4 +67,59 @@ public final class WorkerProtocol {
         ACTIVE,
         DRAINING
     }
+
+    /** @param maxAssignments how many assignments the worker can start now (its free execution slots). */
+    public record ClaimRequest(@NotNull @Min(1) @Max(256) Integer maxAssignments) {}
+
+    /**
+     * Work the scheduler placed on this worker. Claiming starts the attempt: from here on the worker owns it until it
+     * reports an outcome or its lease expires.
+     *
+     * @param attemptId the fencing token for every later call about this execution.
+     */
+    public record Assignment(
+            UUID attemptId,
+            UUID jobId,
+            int attemptNo,
+            String workloadType,
+            Map<String, Object> payload,
+            int timeoutSeconds) {}
+
+    public record ClaimResponse(List<Assignment> assignments) {}
+
+    public enum AttemptOutcome {
+        SUCCEEDED,
+        FAILED,
+        /** The worker stopped because the job was cancelled (it saw the attempt in {@code cancelAttemptIds}). */
+        CANCELLED
+    }
+
+    /**
+     * Why an attempt failed. The class, not the message, drives the retry decision (docs/FAILURE_SEMANTICS.md).
+     * {@code WORKER_LOST} is never reported by a worker: the control plane assigns it when a lease expires.
+     */
+    public enum FailureClass {
+        TRANSIENT,
+        TIMEOUT,
+        RATE_LIMITED,
+        PROVIDER_UNAVAILABLE,
+        WORKER_LOST,
+        RESOURCE_EXHAUSTED,
+        INVALID_INPUT,
+        NON_RETRYABLE,
+        INTERNAL
+    }
+
+    /**
+     * @param failureClass required when {@code outcome} is FAILED, absent otherwise.
+     * @param result workload output on success; size-capped by the control plane.
+     */
+    public record ReportRequest(
+            @NotNull AttemptOutcome outcome,
+            FailureClass failureClass,
+            @Size(max = 1000) String message,
+            Map<String, Object> result) {}
+
+    /** @param jobStatus the job's status after this report was applied (or after the identical earlier report). */
+    public record ReportResponse(UUID attemptId, String attemptStatus, String jobStatus) {}
 }

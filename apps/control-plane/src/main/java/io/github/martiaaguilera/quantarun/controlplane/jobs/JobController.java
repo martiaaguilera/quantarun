@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 @RestController
@@ -119,6 +120,21 @@ class JobController {
 
     record CancelResponse(UUID jobId, JobLifecycle.CancelOutcome outcome) {}
 
+    record AttemptResponse(
+            UUID id,
+            int attemptNo,
+            UUID workerId,
+            AttemptStatus status,
+            Instant assignedAt,
+            @Nullable Instant startedAt,
+            @Nullable Instant finishedAt,
+            Instant leaseExpiresAt,
+            int leaseRenewals,
+            @Nullable String failureClass,
+            @Nullable String failureMessage,
+            @Nullable String retryDecision,
+            @Nullable JsonNode result) {}
+
     private final JobLifecycle lifecycle;
     private final JobQueries queries;
     private final Clock clock;
@@ -175,6 +191,27 @@ class JobController {
         return queries.events(caller, jobId).stream()
                 .map(event -> new JobEventResponse(
                         event.id(), event.attemptId(), event.type(), event.occurredAt(), event.details()))
+                .toList();
+    }
+
+    /** Every attempt of the job, oldest first: retries never overwrite history (docs/SPEC.md §4). */
+    @GetMapping("/{jobId}/attempts")
+    List<AttemptResponse> attempts(Caller caller, @PathVariable UUID jobId) {
+        return queries.attempts(caller, jobId).stream()
+                .map(attempt -> new AttemptResponse(
+                        attempt.id(),
+                        attempt.attemptNo(),
+                        attempt.workerId(),
+                        AttemptStatus.valueOf(attempt.status()),
+                        attempt.assignedAt(),
+                        attempt.startedAt(),
+                        attempt.finishedAt(),
+                        attempt.leaseExpiresAt(),
+                        attempt.leaseRenewals(),
+                        attempt.failureClass(),
+                        attempt.failureMessage(),
+                        attempt.retryDecision(),
+                        attempt.result()))
                 .toList();
     }
 
