@@ -2,7 +2,9 @@ package io.github.martiaaguilera.quantarun.controlplane.scheduler;
 
 import io.github.martiaaguilera.quantarun.controlplane.jobs.Job;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.JobPlacement;
+import io.github.martiaaguilera.quantarun.controlplane.projects.Projects;
 import io.github.martiaaguilera.quantarun.controlplane.scheduler.internal.DecisionRepository;
+import io.github.martiaaguilera.quantarun.controlplane.scheduler.internal.FairShareRepository;
 import io.github.martiaaguilera.quantarun.controlplane.scheduler.policy.Demand;
 import io.github.martiaaguilera.quantarun.controlplane.scheduler.policy.PlacementDecision;
 import io.github.martiaaguilera.quantarun.controlplane.scheduler.policy.PlacementPlanner;
@@ -15,8 +17,12 @@ import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerProperties;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerResources;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
@@ -47,7 +53,9 @@ public class SchedulingCycle {
 
     private final JobPlacement jobs;
     private final WorkerCapacity workers;
+    private final Projects projects;
     private final DecisionRepository decisions;
+    private final FairShareRepository fairShare;
     private final JdbcClient jdbc;
     private final SchedulerProperties properties;
     private final WorkerProperties workerProperties;
@@ -55,13 +63,17 @@ public class SchedulingCycle {
     SchedulingCycle(
             JobPlacement jobs,
             WorkerCapacity workers,
+            Projects projects,
             DecisionRepository decisions,
+            FairShareRepository fairShare,
             JdbcClient jdbc,
             SchedulerProperties properties,
             WorkerProperties workerProperties) {
         this.jobs = jobs;
         this.workers = workers;
+        this.projects = projects;
         this.decisions = decisions;
+        this.fairShare = fairShare;
         this.jdbc = jdbc;
         this.properties = properties;
         this.workerProperties = workerProperties;
@@ -76,10 +88,7 @@ public class SchedulingCycle {
      */
     @Transactional
     public CycleResult runCycle(SchedulingPolicy policy) {
-        var windowOrder = policy.ordering() == SchedulingPolicy.JobOrdering.PRIORITY
-                ? JobPlacement.WindowOrder.HIGHEST_PRIORITY_FIRST
-                : JobPlacement.WindowOrder.OLDEST_FIRST;
-        var lockedJobs = jobs.lockRunnableJobs(properties.windowSize(), windowOrder);
+        var lockedJobs = jobs.lockRunnableJobs(properties.windowSize(), windowOrder(policy));
         if (lockedJobs.isEmpty()) {
             return new CycleResult(0, 0, 0, 0);
         }
@@ -87,11 +96,17 @@ public class SchedulingCycle {
         // Database time, taken inside the transaction: the same clock that stamps availability and heartbeats.
         var now = jdbc.sql("SELECT now()").query(Instant.class).single();
 
+        // Read after the worker locks: cycles that can place work are serialised by those locks, so quota usage and
+        // virtual times cannot change under this cycle until it commits.
+        var projectIds = lockedJobs.stream().map(Job::projectId).collect(Collectors.toSet());
         var snapshot = new SchedulingSnapshot(
                 now,
                 lockedJobs.stream().map(SchedulingCycle::toPendingJob).toList(),
-                liveWorkers.stream().map(this::toCandidate).toList());
-        var plan = PlacementPlanner.planPlacements(snapshot, policy);
+                liveWorkers.stream().map(this::toCandidate).toList(),
+                projectStates(projectIds),
+                fairShare.systemVirtualTime());
+        var planned = PlacementPlanner.plan(snapshot, policy);
+        var plan = planned.decisions();
         var jobsById = lockedJobs.stream().collect(Collectors.toMap(Job::id, Function.identity()));
 
         int placed = 0;
@@ -111,7 +126,7 @@ public class SchedulingCycle {
                     decisions.insert(decision, policy, attemptId, queueWaitMs);
                     placed++;
                 }
-                case WAITING_FOR_CAPACITY, UNSCHEDULABLE -> {
+                case WAITING_FOR_CAPACITY, WAITING_FOR_QUOTA, UNSCHEDULABLE -> {
                     if (jobs.recordWaiting(job.id(), decision.outcome().name(), decision.reason())) {
                         decisions.insert(decision, policy, null, queueWaitMs);
                         logWaitingChange(decision);
@@ -124,7 +139,40 @@ public class SchedulingCycle {
                 }
             }
         }
+        if (!liveWorkers.isEmpty()) {
+            fairShare.save(planned.virtualTimes(), planned.systemVirtualTime());
+        }
         return new CycleResult(lockedJobs.size(), placed, waiting, unschedulable);
+    }
+
+    private static JobPlacement.WindowOrder windowOrder(SchedulingPolicy policy) {
+        return switch (policy.ordering()) {
+            case PRIORITY -> JobPlacement.WindowOrder.HIGHEST_PRIORITY_FIRST;
+            case EARLIEST_DEADLINE -> JobPlacement.WindowOrder.EARLIEST_DEADLINE_FIRST;
+            case FAIR_SHARE -> JobPlacement.WindowOrder.PER_PROJECT_ROUND_ROBIN;
+            case FIFO -> JobPlacement.WindowOrder.OLDEST_FIRST;
+        };
+    }
+
+    private Map<UUID, SchedulingSnapshot.ProjectState> projectStates(Set<UUID> projectIds) {
+        var usage = jobs.activeUsage(projectIds);
+        var clocks = fairShare.virtualTimes(projectIds);
+        var states = new HashMap<UUID, SchedulingSnapshot.ProjectState>();
+        for (var project : projects.findAll(projectIds)) {
+            var used = usage.getOrDefault(project.id(), new JobPlacement.ProjectUsage(0, 0));
+            states.put(
+                    project.id(),
+                    new SchedulingSnapshot.ProjectState(
+                            project.id(),
+                            project.name(),
+                            project.weight(),
+                            clocks.getOrDefault(project.id(), 0.0),
+                            project.maxRunningJobs(),
+                            project.maxAccelerators(),
+                            used.runningJobs(),
+                            used.acceleratorsInUse()));
+        }
+        return states;
     }
 
     private static SchedulingSnapshot.PendingJob toPendingJob(Job job) {

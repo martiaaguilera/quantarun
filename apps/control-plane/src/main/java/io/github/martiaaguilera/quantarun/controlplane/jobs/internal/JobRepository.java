@@ -93,6 +93,14 @@ public class JobRepository {
                 .optional();
     }
 
+    /** Jobs that still occupy the project's admission quota: everything not yet finished. */
+    public int countUnfinished(UUID projectId) {
+        return jdbc.sql("""
+                        SELECT count(*) FROM jobs
+                        WHERE project_id = :projectId AND status IN ('QUEUED', 'SCHEDULED', 'RUNNING', 'RETRY_WAIT')
+                        """).param("projectId", projectId).query(Integer.class).single();
+    }
+
     public Optional<Job> findById(UUID id) {
         return jdbc.sql("SELECT " + COLUMNS + " FROM jobs WHERE id = :id")
                 .param("id", id)
@@ -108,6 +116,37 @@ public class JobRepository {
         return jdbc.sql("SELECT " + COLUMNS + " FROM jobs"
                         + " WHERE status IN ('QUEUED', 'RETRY_WAIT') AND available_at <= now()"
                         + " ORDER BY " + orderBy + " LIMIT :limit FOR UPDATE SKIP LOCKED")
+                .param("limit", limit)
+                .query(jobMapper)
+                .list();
+    }
+
+    /**
+     * Locks a window that interleaves projects: each project's runnable jobs are ranked oldest first, and the window
+     * takes rank 1 of every project, then rank 2, and so on. One index probe per project
+     * ({@code jobs_runnable_by_project_idx}); projects are tenants, so there are few of them.
+     */
+    public List<Job> lockRunnableRoundRobin(int limit) {
+        return jdbc.sql("SELECT " + COLUMNS + """
+                         FROM jobs
+                        WHERE id IN (
+                            SELECT ranked.id
+                            FROM projects p
+                            CROSS JOIN LATERAL (
+                                SELECT j.id, j.available_at,
+                                       row_number() OVER (ORDER BY j.available_at, j.id) AS project_rank
+                                FROM jobs j
+                                WHERE j.project_id = p.id AND j.status IN ('QUEUED', 'RETRY_WAIT')
+                                  AND j.available_at <= now()
+                                ORDER BY j.available_at, j.id
+                                LIMIT :limit
+                            ) ranked
+                            ORDER BY ranked.project_rank, ranked.available_at, ranked.id
+                            LIMIT :limit)
+                          AND status IN ('QUEUED', 'RETRY_WAIT')
+                        ORDER BY available_at, id
+                        FOR UPDATE SKIP LOCKED
+                        """)
                 .param("limit", limit)
                 .query(jobMapper)
                 .list();

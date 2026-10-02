@@ -20,7 +20,20 @@ public enum SchedulingPolicy {
      * Oldest first, packed onto the fullest worker that fits, keeping accelerator workers free for accelerator jobs.
      * Leaves large contiguous capacity for big jobs; concentrates load and its failure blast radius.
      */
-    BIN_PACKING(JobOrdering.FIFO, WorkerSelection.BEST_FIT_CONSERVING_ACCELERATORS);
+    BIN_PACKING(JobOrdering.FIFO, WorkerSelection.BEST_FIT_CONSERVING_ACCELERATORS),
+    /**
+     * Weighted fair share between projects (start-time fair queuing on virtual time, see {@link PlacementPlanner}):
+     * the backlogged project that has received the least service per unit of weight goes next, FIFO within a project.
+     * A project flooding the queue only raises its own virtual time. Costs: a high-priority job of a heavy project
+     * can wait behind a light project's ordinary work.
+     */
+    FAIR_SHARE(JobOrdering.FAIR_SHARE, WorkerSelection.LEAST_LOADED),
+    /**
+     * Earliest deadline first, then priority, then FIFO; jobs without a deadline go last. Minimises missed deadlines
+     * while the fleet can keep up; under overload EDF degrades badly (late jobs push everything later) and work
+     * without a deadline can starve.
+     */
+    DEADLINE(JobOrdering.EARLIEST_DEADLINE, WorkerSelection.LEAST_LOADED);
 
     private final JobOrdering ordering;
     private final WorkerSelection selection;
@@ -42,6 +55,13 @@ public enum SchedulingPolicy {
         FIFO(Comparator.comparing(PendingJob::availableAt).thenComparing(PendingJob::id)),
         PRIORITY(Comparator.comparingInt(PendingJob::priority)
                 .reversed()
+                .thenComparing(PendingJob::availableAt)
+                .thenComparing(PendingJob::id)),
+        /** FIFO within each project; the planner interleaves projects by virtual time. */
+        FAIR_SHARE(FIFO.comparator),
+        EARLIEST_DEADLINE(Comparator.comparing(
+                        PendingJob::deadline, Comparator.nullsLast(Comparator.<java.time.Instant>naturalOrder()))
+                .thenComparing(Comparator.comparingInt(PendingJob::priority).reversed())
                 .thenComparing(PendingJob::availableAt)
                 .thenComparing(PendingJob::id));
 

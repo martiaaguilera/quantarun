@@ -3,6 +3,7 @@ package io.github.martiaaguilera.quantarun.controlplane.jobs;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobEventRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.SubmissionFingerprint;
+import io.github.martiaaguilera.quantarun.controlplane.projects.Projects;
 import io.github.martiaaguilera.quantarun.controlplane.web.ApiException;
 import java.security.MessageDigest;
 import java.util.List;
@@ -44,10 +45,12 @@ public class JobLifecycle {
 
     private final JobRepository jobs;
     private final JobEventRepository events;
+    private final Projects projects;
 
-    JobLifecycle(JobRepository jobs, JobEventRepository events) {
+    JobLifecycle(JobRepository jobs, JobEventRepository events, Projects projects) {
         this.jobs = jobs;
         this.events = events;
+        this.projects = projects;
     }
 
     /**
@@ -57,6 +60,10 @@ public class JobLifecycle {
     @Transactional
     public SubmissionResult submit(UUID projectId, JobSubmission submission, @Nullable String idempotencyKey) {
         byte[] requestHash = idempotencyKey == null ? null : SubmissionFingerprint.of(submission);
+        var replay = admit(projectId, idempotencyKey, requestHash);
+        if (replay != null) {
+            return replay;
+        }
 
         var inserted = jobs.insertIfAbsent(projectId, submission, idempotencyKey, requestHash);
         if (inserted.isPresent()) {
@@ -78,6 +85,44 @@ public class JobLifecycle {
         var existing = jobs.findByIdempotencyKey(projectId, idempotencyKey)
                 .orElseThrow(() -> new IllegalStateException(
                         "Idempotency conflict reported but no job found for key in project " + projectId));
+        return replayOrConflict(existing, requestHash);
+    }
+
+    /**
+     * Admission control against the project's {@code maxQueuedJobs}. Only a project with that quota pays for it: its
+     * row is locked so concurrent submissions count one at a time, and the count and the insert that follows commit
+     * together. A retried submission whose job already exists is replayed even at the quota: it adds no work.
+     *
+     * @return the replay of an existing job, or null to go on and insert
+     */
+    private @Nullable SubmissionResult admit(
+            UUID projectId, @Nullable String idempotencyKey, byte @Nullable [] requestHash) {
+        var unlocked = projects.findAll(List.of(projectId));
+        if (unlocked.isEmpty() || unlocked.getFirst().maxQueuedJobs() == null) {
+            return null;
+        }
+        var project = projects.lockForAdmission(projectId).orElseThrow();
+        if (project.maxQueuedJobs() == null) {
+            return null;
+        }
+        if (idempotencyKey != null) {
+            var existing = jobs.findByIdempotencyKey(projectId, idempotencyKey);
+            if (existing.isPresent()) {
+                return replayOrConflict(existing.get(), requestHash);
+            }
+        }
+        var unfinished = jobs.countUnfinished(projectId);
+        if (unfinished >= project.maxQueuedJobs()) {
+            throw new ApiException(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "QUOTA_EXCEEDED",
+                    "Project " + project.name() + " already has " + unfinished + " unfinished jobs; its quota is "
+                            + project.maxQueuedJobs() + ". Wait for some to finish or ask an operator to raise it.");
+        }
+        return null;
+    }
+
+    private static SubmissionResult replayOrConflict(JobRepository.IdempotencyRecord existing, byte[] requestHash) {
         if (!MessageDigest.isEqual(existing.requestHash(), requestHash)) {
             throw new ApiException(
                     HttpStatus.CONFLICT,
