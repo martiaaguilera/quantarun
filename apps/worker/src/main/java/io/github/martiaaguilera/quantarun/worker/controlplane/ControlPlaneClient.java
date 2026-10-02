@@ -18,7 +18,7 @@ public class ControlPlaneClient {
     }
 
     /**
-     * The control plane will never apply this report: the attempt already ended (its lease expired and it was
+     * The control plane will never apply this report or checkpoint: the attempt already ended (its lease expired and it was
      * recovered), it is not this worker's, or this registration was retired. Retrying cannot help.
      */
     public static final class ReportRejectedException extends RuntimeException {
@@ -84,6 +84,24 @@ public class ControlPlaneClient {
                                     response.getStatusCode().value());
                         })
                 .body(WorkerProtocol.ReportResponse.class);
+    }
+
+    /** 404 and 409 mean the attempt is no longer this worker's to write for; they are final, like a report's. */
+    public WorkerProtocol.CheckpointResponse checkpoint(
+            String workerSecret, UUID attemptId, WorkerProtocol.CheckpointRequest checkpoint) {
+        return http.post()
+                .uri(WorkerProtocol.BASE_PATH + "/attempts/{attemptId}/checkpoints", attemptId)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + workerSecret)
+                .body(checkpoint)
+                .retrieve()
+                .onStatus(
+                        status -> status.value() == HttpStatus.CONFLICT.value()
+                                || status.value() == HttpStatus.NOT_FOUND.value(),
+                        (request, response) -> {
+                            throw new ReportRejectedException(
+                                    response.getStatusCode().value());
+                        })
+                .body(WorkerProtocol.CheckpointResponse.class);
     }
 
     public void deregister(String workerSecret) {

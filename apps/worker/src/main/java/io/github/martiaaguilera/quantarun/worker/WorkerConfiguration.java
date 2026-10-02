@@ -39,6 +39,7 @@ class WorkerConfiguration {
                 settings.capacity().slots(),
                 new AttemptExecutor.ReportPolicy(
                         settings.reportAttempts(), Duration.ofMillis(200), Duration.ofSeconds(5)),
+                new AttemptExecutor.HttpSettings(settings.httpAllowedPrivateAddresses(), settings.connectTimeout()),
                 RandomGenerator.getDefault());
     }
 

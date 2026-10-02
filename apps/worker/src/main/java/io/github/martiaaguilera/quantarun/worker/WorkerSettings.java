@@ -23,6 +23,8 @@ import org.springframework.validation.annotation.Validated;
  * @param shutdownGrace how long a graceful shutdown waits for running attempts before stopping them. Must stay below
  *     {@code spring.lifecycle.timeout-per-shutdown-phase}, or the platform kills the process mid-wait.
  * @param reportAttempts how many times an outcome report is sent before the worker gives up and lets the lease expire.
+ * @param httpAllowedPrivateAddresses IPs or CIDRs the http workload may call although they are private or loopback
+ *     (SSRF exceptions, for a local mock provider). Empty by default: only public addresses are reachable.
  */
 @Validated
 @ConfigurationProperties("quantarun.worker")
@@ -40,7 +42,8 @@ public record WorkerSettings(
         @NotNull @DefaultValue("30s") Duration maxRetryDelay,
         @NotNull @DefaultValue("500ms") Duration claimInterval,
         @NotNull @DefaultValue("25s") Duration shutdownGrace,
-        @Min(1) @Max(20) @DefaultValue("5") int reportAttempts) {
+        @Min(1) @Max(20) @DefaultValue("5") int reportAttempts,
+        @NotNull @DefaultValue @Size(max = 32) List<@NotBlank String> httpAllowedPrivateAddresses) {
 
     public record Capacity(
             @DefaultValue("2000") int cpuMillis,

@@ -5,6 +5,7 @@ import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.AttemptOutcome
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
 import io.github.martiaaguilera.quantarun.worker.Backoff;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +40,8 @@ import org.springframework.web.client.RestClientException;
 public class AttemptExecutor implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(AttemptExecutor.class);
+    /** The protocol's cap on retryAfterMillis; a longer Retry-After is reported as this. */
+    private static final long MAX_RETRY_AFTER_MILLIS = 3_600_000;
 
     /** How an attempt ended, from the worker's point of view. */
     enum Stop {
@@ -55,6 +58,12 @@ public class AttemptExecutor implements AutoCloseable {
      *     recovers the attempt, so a lost report costs a retry, never correctness.
      */
     public record ReportPolicy(int attempts, Duration baseDelay, Duration maxDelay) {}
+
+    /**
+     * @param allowedPrivateAddresses IPs or CIDRs the http workload may reach although they are internal; empty in
+     *     production, so only public addresses are reachable.
+     */
+    public record HttpSettings(List<String> allowedPrivateAddresses, Duration connectTimeout) {}
 
     private static final class Running {
         final WorkerProtocol.Assignment assignment;
@@ -81,13 +90,23 @@ public class AttemptExecutor implements AutoCloseable {
     private final Object idle = new Object();
 
     public AttemptExecutor(
-            ControlPlaneClient controlPlane, int slots, ReportPolicy reportPolicy, RandomGenerator random) {
+            ControlPlaneClient controlPlane,
+            int slots,
+            ReportPolicy reportPolicy,
+            HttpSettings http,
+            RandomGenerator random) {
         this.controlPlane = controlPlane;
         this.slots = slots;
         this.reportPolicy = reportPolicy;
         this.random = random;
         this.workloads = Stream.of(
-                        new DelayWorkload(), new CpuHashWorkload(), new MockInferenceWorkload(), new FailWorkload())
+                        new DelayWorkload(),
+                        new CpuHashWorkload(),
+                        new MockInferenceWorkload(),
+                        new FailWorkload(),
+                        new MemoryWorkload(),
+                        new StagedWorkload(),
+                        new HttpWorkload(http.allowedPrivateAddresses(), http.connectTimeout(), Clock.systemUTC()))
                 .collect(Collectors.toUnmodifiableMap(Workload::type, Function.identity()));
     }
 
@@ -189,11 +208,17 @@ public class AttemptExecutor implements AutoCloseable {
         boolean interrupted = false;
         // Stopped before it even started (cancelled or lost while queued): skip straight to the outcome.
         if (attempt.stop.get() == null) {
+            var context = new AttemptContext(
+                    assignment.attemptNo(),
+                    assignment.lastCheckpoint(),
+                    (stage, stageResult) -> commitCheckpoint(attempt, stage, stageResult));
             try {
-                result = workload(assignment.workloadType())
-                        .execute(new Payload(assignment.payload()), assignment.attemptNo());
+                result = workload(assignment.workloadType()).execute(new Payload(assignment.payload()), context);
             } catch (InterruptedException e) {
                 interrupted = true;
+            } catch (AttemptFencedException e) {
+                // The control plane refused a checkpoint: the attempt is no longer ours. Stop as if it were lost.
+                attempt.stop.compareAndSet(null, Stop.LOST);
             } catch (RuntimeException e) {
                 failure = e;
             }
@@ -209,7 +234,7 @@ public class AttemptExecutor implements AutoCloseable {
                 .log("Attempt stopped");
         return switch (stoppedBy) {
             case LOST -> null;
-            case CANCELLED -> new WorkerProtocol.ReportRequest(AttemptOutcome.CANCELLED, null, "cancelled", null);
+            case CANCELLED -> new WorkerProtocol.ReportRequest(AttemptOutcome.CANCELLED, null, "cancelled", null, null);
             case TIMED_OUT ->
                 failed(FailureClass.TIMEOUT, "exceeded the attempt timeout of " + assignment.timeoutSeconds() + " s");
             case SHUTDOWN -> failed(FailureClass.TRANSIENT, "worker shut down before the attempt finished");
@@ -223,7 +248,13 @@ public class AttemptExecutor implements AutoCloseable {
             @Nullable RuntimeException failure,
             boolean interrupted) {
         if (failure instanceof WorkloadFailure classified) {
-            return failed(classified.failureClass(), classified.getMessage());
+            var retryAfter = classified.failureClass() == FailureClass.RATE_LIMITED ? classified.retryAfter() : null;
+            return new WorkerProtocol.ReportRequest(
+                    AttemptOutcome.FAILED,
+                    classified.failureClass(),
+                    bounded(classified.getMessage()),
+                    null,
+                    retryAfter == null ? null : Math.min(retryAfter.toMillis(), MAX_RETRY_AFTER_MILLIS));
         }
         if (failure != null) {
             log.atWarn()
@@ -236,7 +267,7 @@ public class AttemptExecutor implements AutoCloseable {
             // Nobody asked it to stop, yet it was interrupted: say so rather than invent a success.
             return failed(FailureClass.INTERNAL, "interrupted without a stop request");
         }
-        return new WorkerProtocol.ReportRequest(AttemptOutcome.SUCCEEDED, null, null, result);
+        return new WorkerProtocol.ReportRequest(AttemptOutcome.SUCCEEDED, null, null, result, null);
     }
 
     private Workload workload(String type) {
@@ -249,8 +280,42 @@ public class AttemptExecutor implements AutoCloseable {
     }
 
     private static WorkerProtocol.ReportRequest failed(FailureClass failureClass, @Nullable String message) {
-        var bounded = message == null || message.length() <= 1000 ? message : message.substring(0, 1000);
-        return new WorkerProtocol.ReportRequest(AttemptOutcome.FAILED, failureClass, bounded, null);
+        return new WorkerProtocol.ReportRequest(AttemptOutcome.FAILED, failureClass, bounded(message), null, null);
+    }
+
+    private static @Nullable String bounded(@Nullable String message) {
+        return message == null || message.length() <= 1000 ? message : message.substring(0, 1000);
+    }
+
+    /**
+     * Commits one stage, with the same bounded retries as a report. A rejection means the attempt was recovered: the
+     * workload must stop and stay silent. Running out of retries fails the attempt as TRANSIENT; the retry resumes
+     * from the last stage that did commit, so nothing committed is lost.
+     */
+    private void commitCheckpoint(Running attempt, int stageIndex, Map<String, Object> result)
+            throws InterruptedException {
+        var attemptId = attempt.assignment.attemptId();
+        var backoff = new Backoff(reportPolicy.baseDelay(), reportPolicy.maxDelay());
+        for (int tryNo = 1; ; tryNo++) {
+            try {
+                controlPlane.checkpoint(
+                        attempt.credential, attemptId, new WorkerProtocol.CheckpointRequest(stageIndex, result));
+                return;
+            } catch (ControlPlaneClient.ReportRejectedException e) {
+                throw new AttemptFencedException("checkpoint for stage " + stageIndex + " rejected: " + e.getMessage());
+            } catch (HttpClientErrorException e) {
+                throw new WorkloadFailure(
+                        FailureClass.NON_RETRYABLE,
+                        "checkpoint for stage " + stageIndex + " refused with HTTP "
+                                + e.getStatusCode().value());
+            } catch (RestClientException e) {
+                if (tryNo >= reportPolicy.attempts()) {
+                    throw new WorkloadFailure(
+                            FailureClass.TRANSIENT, "could not commit the checkpoint for stage " + stageIndex);
+                }
+                Thread.sleep(backoff.delayForFailure(tryNo, random));
+            }
+        }
     }
 
     /**

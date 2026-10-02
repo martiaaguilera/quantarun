@@ -23,18 +23,23 @@ class WorkloadTest {
 
         @Test
         void sleepsAndReportsTheDuration() throws Exception {
-            assertThat(new DelayWorkload().execute(new Payload(Map.of("durationMs", 5)), 1))
+            assertThat(new DelayWorkload()
+                            .execute(new Payload(Map.of("durationMs", 5)), AttemptContext.withoutCheckpoints(1)))
                     .containsEntry("sleptMs", 5L);
         }
 
         @Test
         void rejectsMissingNegativeOrOversizedDurations() {
             var delay = new DelayWorkload();
-            assertInvalid(() -> delay.execute(new Payload(Map.of()), 1));
-            assertInvalid(() -> delay.execute(new Payload(Map.of("durationMs", -1)), 1));
-            assertInvalid(() -> delay.execute(new Payload(Map.of("durationMs", 600_001)), 1));
-            assertInvalid(() -> delay.execute(new Payload(Map.of("durationMs", "10")), 1));
-            assertInvalid(() -> delay.execute(new Payload(Map.of("durationMs", 1.5)), 1));
+            assertInvalid(() -> delay.execute(new Payload(Map.of()), AttemptContext.withoutCheckpoints(1)));
+            assertInvalid(
+                    () -> delay.execute(new Payload(Map.of("durationMs", -1)), AttemptContext.withoutCheckpoints(1)));
+            assertInvalid(() ->
+                    delay.execute(new Payload(Map.of("durationMs", 600_001)), AttemptContext.withoutCheckpoints(1)));
+            assertInvalid(
+                    () -> delay.execute(new Payload(Map.of("durationMs", "10")), AttemptContext.withoutCheckpoints(1)));
+            assertInvalid(
+                    () -> delay.execute(new Payload(Map.of("durationMs", 1.5)), AttemptContext.withoutCheckpoints(1)));
         }
 
         @Test
@@ -44,7 +49,8 @@ class WorkloadTest {
             var thread = Thread.ofVirtual().start(() -> {
                 started.countDown();
                 try {
-                    new DelayWorkload().execute(new Payload(Map.of("durationMs", 600_000)), 1);
+                    new DelayWorkload()
+                            .execute(new Payload(Map.of("durationMs", 600_000)), AttemptContext.withoutCheckpoints(1));
                     outcome.complete(null);
                 } catch (Throwable e) {
                     outcome.complete(e);
@@ -65,7 +71,9 @@ class WorkloadTest {
             var expected = MessageDigest.getInstance("SHA-256")
                     .digest(MessageDigest.getInstance("SHA-256").digest("seed".getBytes(StandardCharsets.UTF_8)));
 
-            var result = new CpuHashWorkload().execute(new Payload(Map.of("iterations", 2, "seed", "seed")), 1);
+            var result = new CpuHashWorkload()
+                    .execute(
+                            new Payload(Map.of("iterations", 2, "seed", "seed")), AttemptContext.withoutCheckpoints(1));
 
             assertThat(result)
                     .containsEntry("iterations", 2L)
@@ -77,7 +85,10 @@ class WorkloadTest {
             var outcome = new CompletableFuture<Throwable>();
             var thread = Thread.ofVirtual().start(() -> {
                 try {
-                    new CpuHashWorkload().execute(new Payload(Map.of("iterations", CpuHashWorkload.MAX_ITERATIONS)), 1);
+                    new CpuHashWorkload()
+                            .execute(
+                                    new Payload(Map.of("iterations", CpuHashWorkload.MAX_ITERATIONS)),
+                                    AttemptContext.withoutCheckpoints(1));
                     outcome.complete(null);
                 } catch (Throwable e) {
                     outcome.complete(e);
@@ -90,9 +101,12 @@ class WorkloadTest {
 
         @Test
         void boundsTheIterationCount() {
-            assertInvalid(() -> new CpuHashWorkload().execute(new Payload(Map.of("iterations", 0)), 1));
-            assertInvalid(() ->
-                    new CpuHashWorkload().execute(new Payload(Map.of("iterations", BigInteger.TEN.pow(30))), 1));
+            assertInvalid(() -> new CpuHashWorkload()
+                    .execute(new Payload(Map.of("iterations", 0)), AttemptContext.withoutCheckpoints(1)));
+            assertInvalid(() -> new CpuHashWorkload()
+                    .execute(
+                            new Payload(Map.of("iterations", BigInteger.TEN.pow(30))),
+                            AttemptContext.withoutCheckpoints(1)));
         }
     }
 
@@ -104,7 +118,8 @@ class WorkloadTest {
 
         @Test
         void reportsTokenCountsLikeAProvider() throws Exception {
-            var result = new MockInferenceWorkload().execute(new Payload(payload), 1);
+            var result =
+                    new MockInferenceWorkload().execute(new Payload(payload), AttemptContext.withoutCheckpoints(1));
 
             assertThat(result)
                     .containsEntry("model", "mock")
@@ -118,10 +133,11 @@ class WorkloadTest {
         @Test
         void isDeterministicForTheSamePayload_andDiffersForAnotherSeed() throws Exception {
             var workload = new MockInferenceWorkload();
-            var first = workload.execute(new Payload(payload), 1);
-            var retry = workload.execute(new Payload(payload), 2);
+            var first = workload.execute(new Payload(payload), AttemptContext.withoutCheckpoints(1));
+            var retry = workload.execute(new Payload(payload), AttemptContext.withoutCheckpoints(2));
             var other = workload.execute(
-                    new Payload(Map.of("inputTokens", 120, "outputTokens", 40, "latencyMs", 1, "seed", 8)), 1);
+                    new Payload(Map.of("inputTokens", 120, "outputTokens", 40, "latencyMs", 1, "seed", 8)),
+                    AttemptContext.withoutCheckpoints(1));
 
             assertThat(retry).isEqualTo(first);
             assertThat(other.get("outputDigest")).isNotEqualTo(first.get("outputDigest"));
@@ -129,8 +145,10 @@ class WorkloadTest {
 
         @Test
         void requiresTheTokenCounts() {
-            assertInvalid(() ->
-                    new MockInferenceWorkload().execute(new Payload(Map.of("outputTokens", 1, "latencyMs", 0)), 1));
+            assertInvalid(() -> new MockInferenceWorkload()
+                    .execute(
+                            new Payload(Map.of("outputTokens", 1, "latencyMs", 0)),
+                            AttemptContext.withoutCheckpoints(1)));
         }
     }
 
@@ -140,7 +158,9 @@ class WorkloadTest {
         @Test
         void failsWithTheRequestedClass() {
             assertThatThrownBy(() -> new FailWorkload()
-                            .execute(new Payload(Map.of("failureClass", "rate_limited", "message", "429")), 1))
+                            .execute(
+                                    new Payload(Map.of("failureClass", "rate_limited", "message", "429")),
+                                    AttemptContext.withoutCheckpoints(1)))
                     .isInstanceOfSatisfying(WorkloadFailure.class, failure -> {
                         assertThat(failure.failureClass()).isEqualTo(FailureClass.RATE_LIMITED);
                         assertThat(failure.getMessage()).isEqualTo("429");
@@ -152,15 +172,20 @@ class WorkloadTest {
             var payload = new Payload(Map.of("failureClass", "TRANSIENT", "succeedOnAttempt", 3));
             var fail = new FailWorkload();
 
-            assertThatThrownBy(() -> fail.execute(payload, 2)).isInstanceOf(WorkloadFailure.class);
-            assertThat(fail.execute(payload, 3)).containsEntry("succeededOnAttempt", 3);
+            assertThatThrownBy(() -> fail.execute(payload, AttemptContext.withoutCheckpoints(2)))
+                    .isInstanceOf(WorkloadFailure.class);
+            assertThat(fail.execute(payload, AttemptContext.withoutCheckpoints(3)))
+                    .containsEntry("succeededOnAttempt", 3);
         }
 
         @Test
         void cannotImpersonateTheControlPlanesVerdict() {
-            assertInvalid(() -> new FailWorkload().execute(new Payload(Map.of("failureClass", "WORKER_LOST")), 1));
-            assertInvalid(() -> new FailWorkload().execute(new Payload(Map.of("failureClass", "NOPE")), 1));
-            assertInvalid(() -> new FailWorkload().execute(new Payload(Map.of()), 1));
+            assertInvalid(() -> new FailWorkload()
+                    .execute(new Payload(Map.of("failureClass", "WORKER_LOST")), AttemptContext.withoutCheckpoints(1)));
+            assertInvalid(() -> new FailWorkload()
+                    .execute(new Payload(Map.of("failureClass", "NOPE")), AttemptContext.withoutCheckpoints(1)));
+            assertInvalid(
+                    () -> new FailWorkload().execute(new Payload(Map.of()), AttemptContext.withoutCheckpoints(1)));
         }
     }
 

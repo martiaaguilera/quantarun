@@ -15,10 +15,10 @@ interface Workload {
     String type();
 
     /**
-     * @param attemptNo the 1-based attempt number, so a workload can behave differently on a retry (the {@code fail}
-     *     workload uses it to demonstrate recovery).
+     * @param context the attempt number (so a workload can behave differently on a retry; {@code fail} uses it to
+     *     demonstrate recovery), the last checkpoint and the means to commit new ones.
      * @return the result reported to the control plane; small, since it is stored with the attempt.
      * @throws WorkloadFailure for a classified failure, which drives the control plane's retry decision.
      */
-    Map<String, Object> execute(Payload payload, int attemptNo) throws InterruptedException;
+    Map<String, Object> execute(Payload payload, AttemptContext context) throws InterruptedException;
 }
