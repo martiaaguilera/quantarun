@@ -194,9 +194,13 @@ class CheckpointTest {
             var committed = count("SELECT count(*) FROM job_checkpoints");
             if (result[0] instanceof JobAttempts.CheckpointResult.Committed) {
                 assertThat(committed).isEqualTo(1);
+                // Ordered by event id, not by timestamp. now() is when a transaction began, and a reaper transaction
+                // can begin before the checkpoint's yet lock the attempt only after the checkpoint commits, so
+                // committed_at > finished_at is a legal outcome (it failed this test once). An event id is drawn at
+                // insert, while the attempt's row lock is held, so the ids follow the lock order.
                 assertThat(count("""
-                                SELECT count(*) FROM job_checkpoints c JOIN job_attempts a ON a.id = c.attempt_id
-                                WHERE c.committed_at <= a.finished_at
+                                SELECT count(*) FROM job_events cp JOIN job_events lost ON lost.attempt_id = cp.attempt_id
+                                WHERE cp.type = 'CHECKPOINT_COMMITTED' AND lost.type = 'ATTEMPT_LOST' AND cp.id < lost.id
                                 """))
                         .as("committed while the attempt was still running")
                         .isEqualTo(1);
