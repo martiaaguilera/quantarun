@@ -49,7 +49,7 @@ Packages under `io.github.martiaaguilera.quantarun`, verified by Spring Modulith
 | `web` | cross-cutting HTTP concerns: Problem Details, security filter, SSE |
 
 Allowed dependencies point inward: `scheduler → jobs, workers, projects`; `execution → jobs, workers`; `reliability → jobs`; `jobs → workers`;
-`simulation → scheduler.policy` only. The policies depend on nothing except their own snapshot records.
+`simulation → scheduler::policy` (a named interface) and `jobs` (only the pure `RetryPolicy`). The policies depend on nothing except their own snapshot records.
 
 ## 3. Persistence
 
@@ -149,12 +149,12 @@ stays unschedulable for an hour produces one record, not one per cycle.
 
 ## 7. Simulation
 
-The simulator reuses `scheduler.policy` on in-memory snapshots, driven by a priority queue of timestamped
-events (arrival, completion, worker failure, retry-ready). Randomness comes from one seeded
-`SplittableRandom` per scenario. There is no wall clock and no threads, so results are reproducible and
-thousands of jobs simulate in milliseconds. Because policies are pure, anything proven in simulation is
-exercised by the same code that runs live. What simulation does **not** model (DB latency, lock
-contention) is measured separately in benchmarks.
+The simulator runs `PlacementPlanner` and `RetryPolicy`, the production decision code, on in-memory state. A priority
+queue of timestamped events drives it (arrival, attempt finished, retry ready, worker down and up, lease expired), and
+it selects each cycle's window the way the live cycle does. Randomness comes from one seeded `SplittableRandom` per
+scenario. There is no wall clock and no threads, so results are reproducible (I15), and a 2,000-job scenario runs
+against all six policies in under 6 s. What simulation does **not** model (DB latency, lock contention, heartbeats) is
+measured separately in benchmarks. Details and measured results are in `SIMULATION.md`.
 
 ## 8. Observability
 

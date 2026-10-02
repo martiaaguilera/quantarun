@@ -2,6 +2,51 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-02 — now() is when a transaction began, not when its writes happened
+`CheckpointTest.checkpointRacingLeaseRecovery_isNeverCommittedByARecoveredAttempt` failed once in a full run. A
+checkpoint had been committed, yet its `committed_at` was later than the recovered attempt's `finished_at`. The
+invariant held, and the test's clock was wrong. Both columns come from `now()`, which PostgreSQL fixes when a
+transaction starts. The reaper's transaction can start first, while its `SKIP LOCKED` scan is still running. The
+checkpoint can then lock, commit and release the attempt. The scan reaches the row after that, locks it and marks it
+LOST, stamped with its earlier start time. In real order the checkpoint came first, but the timestamps say the
+opposite. The test now orders the two by `job_events` id. An id is drawn at insert, while the attempt's row lock is
+held, so ids follow the lock order. The same caveat applies to every timeline built from these timestamps: across
+transactions that race on one row, the event id is the order and `occurred_at` is approximate. The events API
+already orders by id.
+
+## 2026-10-02 — An unexplained failure of the weighted fair-share test (open)
+`FairShareSchedulingTest.weightsSetTheShareOfService_acrossCycles` failed once in a full `./mvnw verify` on the Phase 8
+branch, with 200 of the expected 320 jobs served. That is 25 full rounds of 8, after which nothing more finished. The
+run was about 3× slower than usual. The test passed in 23 later executions: 3 alone, 5 in full suites, and 15 in a
+row under CPU saturation. No code path in the test is time-dependent (the leases are 15 s and the whole test takes
+under 9 s), and no background loop runs in the test profile. A permanent stall fits a report that was not applied,
+which would leave its attempt RUNNING and its slot held. The test discarded report results, so it could not show this.
+It is not resolved, and the test was not relaxed. It now asserts every round instead: each cycle places 8, each
+report is applied, and a failure names the round and every queued job's scheduling verdict. If it recurs, the
+failure shows which step stopped.
+
+## 2026-10-02 — The first fairness metric called FIFO fairer than fair share
+The simulator's first fairness metric was Jain's index over each project's service rate "while backlogged", where
+backlogged meant "has jobs waiting". On `NOISY_NEIGHBOR` it scored FIFO 0.457 and FAIR_SHARE 0.422, and
+`noisyNeighbor_fairShareIsFairerThanFifo` failed. The test was right and the metric was wrong. Under fair share a quiet
+tenant's job waits only a moment, often while none of its jobs is running, so its "rate while waiting" was near zero
+and the metric scored it as starved. Fairness has to be measured against what a project is entitled to, capped by
+what it wants. The metric now uses weighted max-min fairness: at each instant, water-filling splits the fleet by weight
+among projects with work (waiting or running), never giving one more than it demands, and Jain's index compares
+received with entitled service. FAIR_SHARE now scores 0.991 and FIFO 0.462.
+
+The same test also asserted that fair share lowers the worst wait (starvation). It raised it, from 628 s to 769 s,
+because the noisy tenant's last jobs now wait longer. That is the policy's cost, not a defect, so the assertion was
+replaced by the honest one: the quiet tenants' p95 wait falls (1,175 s to 3 s) and the noisy tenant's rises (1,197 s
+to 1,461 s). Per-project waits are now a reported metric, because totals hide where a policy puts the waiting.
+
+## 2026-10-02 — Simulator: O(n²) twice before the first run
+The first draft walked every job at every event to integrate utilisation and fairness, and searched the outcome list
+linearly for each job at the end. Both are O(n²): about 10⁹ steps at 20,000 jobs. The simulator now keeps per-project
+waiting and serving shares up to date as jobs start and stop, so a step costs O(projects), and the outcomes go
+through a map. `theLargestTraceSimulatesInSeconds` keeps it honest. The remaining cost is the planner itself: a
+20,000-job burst takes 6 to 8 s per policy, mostly spent building decision records for jobs that cannot be placed.
+
 ## 2026-10-02 — Fair share: the window starved the tenant before the policy saw it
 The first design only reordered jobs inside the planner. Walking through the brief's test case (tenant A queues
 10,000 jobs, then tenant B queues 10) showed it could not work: the cycle locks a window of the 200 oldest runnable
