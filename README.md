@@ -4,17 +4,18 @@ A local-first control plane for scheduling, executing, recovering, replaying and
 workloads. It uses PostgreSQL for coordination and OpenTelemetry for visibility, and runs at zero cost with no
 API keys.
 
-> **Status: early development (Phase 5 of 15).** Implemented so far: the job API with a centrally enforced state
+> **Status: early development (Phase 6 of 15).** Implemented so far: the job API with a centrally enforced state
 > machine, idempotent submission (proven with 500 concurrent duplicates on real PostgreSQL), cooperative
 > cancellation, project-scoped API keys and OpenAPI. On the fleet side: three heterogeneous workers that register with
 > per-worker credentials, heartbeat, drain and deregister; silent ones are retired, with a grace period after a
 > control-plane restart. The scheduler places jobs with four policies (FIFO, priority, least-loaded, bin-packing with
 > accelerator conservation) and records why each worker was chosen or rejected; 16 concurrent schedulers are tested not to
-> overcommit any worker. Workers now execute built-in workloads (`delay`, `cpu-hash`, `mock-inference`, `fail`) under
+> overcommit any worker. Workers now execute built-in workloads (`delay`, `cpu-hash`, `mock-inference`, `fail`, `memory`) under
 > leases: a worker killed mid-job is detected by lease expiry and its job finishes on another worker, a stale worker's
-> late report is rejected, and failures are retried with backoff up to a budget
-> ([docs/FAILURE_SEMANTICS.md](docs/FAILURE_SEMANTICS.md)). Checkpoints, revive, fairness and simulation come next. This
-> README only describes what exists.
+> late report is rejected, and failures are retried with backoff (honouring Retry-After) up to a budget; DEAD jobs can be
+> revived. A `staged` workload checkpoints after every stage and resumes on another worker after a crash, and an `http`
+> workload calls external endpoints behind an SSRF guard ([docs/FAILURE_SEMANTICS.md](docs/FAILURE_SEMANTICS.md)).
+> Fairness, simulation and the console come next. This README only describes what exists.
 
 ## What it will be
 

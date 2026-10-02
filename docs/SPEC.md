@@ -145,7 +145,7 @@ the Policy Lab.
 |---|---|---|
 | TRANSIENT | yes | exponential backoff with full jitter |
 | TIMEOUT | yes | backoff |
-| RATE_LIMITED | yes | max(`Retry-After`, backoff) |
+| RATE_LIMITED | yes | max(`Retry-After`, backoff); Retry-After capped at 10 min |
 | PROVIDER_UNAVAILABLE | yes | backoff |
 | WORKER_LOST | yes | none (re-placed immediately) |
 | RESOURCE_EXHAUSTED | yes | backoff |
@@ -155,7 +155,8 @@ the Policy Lab.
 
 Defaults: `max_attempts = 3` per job (overridable at submission, capped at 10); backoff
 `base * 2^(attempt-1)` capped at 60 s, with full jitter. Every retry decision is stored on the attempt that
-failed. Details and worked examples are in `FAILURE_SEMANTICS.md`.
+failed. A revive grants a fresh budget of `max_attempts`, counted from the attempts already made; a job can be revived
+at most 10 times. Details and worked examples are in `FAILURE_SEMANTICS.md`.
 
 ## 9. Idempotency
 
@@ -174,8 +175,8 @@ stale workers.
 
 Only the `staged` workload type is checkpointable. Its payload declares an ordered list of stages. After
 each stage, the worker commits a checkpoint (stage index plus a small JSON result, capped at 8 KiB). The commit
-is accepted only while the attempt is active. A new attempt receives the last committed checkpoint and resumes
-after it. The job timeline shows `resumed from stage k` versus `started from zero`.
+is accepted only while the attempt is running, only for the next stage (the last committed one plus one), and a
+committed stage is never rewritten. A new attempt receives the last committed checkpoint and resumes after it. The job timeline shows `resumed from stage k` versus `started from zero`.
 
 ## 11. Simulation and replay
 
@@ -223,7 +224,7 @@ See `THREAT_MODEL.md`.
 
 A phase is complete only when its criteria are met *and verified by running them*.
 
-**Progress:** Phase 0 done (2026-09-30). Phase 1 done (2026-09-30): verified locally with `./mvnw verify`, `npm run check` and `docker compose up --build --wait`, probed through nginx. CI is defined but has not run yet, because there is no GitHub remote. Phase 2 done (2026-09-30): jobs API, state machine, idempotent submission, cancellation, project API keys and OpenAPI, all verified by 63 tests on real PostgreSQL. Phase 3 done (2026-10-01): worker registration with per-worker credentials, heartbeats, derived health, draining, deregistration, retirement of silent workers with a startup grace period, capacity CHECK guards, and three heterogeneous workers in compose. Verified by 96 tests and an end-to-end kill/stop/restart run. Phase 4 done (2026-10-02): attempts as assignments with reservations, the transactional scheduling cycle, FIFO/PRIORITY/LEAST_LOADED/BIN_PACKING, structured decision records with per-worker verdicts, and the background loop. Verified by 130 tests (property tests over 2,000 random cases per policy, 16 concurrent cycles per policy on real PG) and end to end on the compose stack. Phase 5 done (2026-10-02): claim, heartbeat lease renewal and fenced reports; the lease reaper, armed only after extending leases on startup; worker executors for `delay`, `cpu-hash`, `mock-inference` and `fail` with slots, timeouts, cancellation and graceful shutdown. Verified by 197 tests (160 control plane, 37 worker), including completion racing lease expiry (8 × 40 attempts against 4 concurrent reapers) and heartbeats racing the reaper on real PG 18, and end to end: a worker killed with `kill -9` mid-job was recovered and the job finished on another worker (FAILURE_SEMANTICS.md). The compose images were not built in the development environment; CI builds them.
+**Progress:** Phase 0 done (2026-09-30). Phase 1 done (2026-09-30): verified locally with `./mvnw verify`, `npm run check` and `docker compose up --build --wait`, probed through nginx. CI is defined but has not run yet, because there is no GitHub remote. Phase 2 done (2026-09-30): jobs API, state machine, idempotent submission, cancellation, project API keys and OpenAPI, all verified by 63 tests on real PostgreSQL. Phase 3 done (2026-10-01): worker registration with per-worker credentials, heartbeats, derived health, draining, deregistration, retirement of silent workers with a startup grace period, capacity CHECK guards, and three heterogeneous workers in compose. Verified by 96 tests and an end-to-end kill/stop/restart run. Phase 4 done (2026-10-02): attempts as assignments with reservations, the transactional scheduling cycle, FIFO/PRIORITY/LEAST_LOADED/BIN_PACKING, structured decision records with per-worker verdicts, and the background loop. Verified by 130 tests (property tests over 2,000 random cases per policy, 16 concurrent cycles per policy on real PG) and end to end on the compose stack. Phase 5 done (2026-10-02): claim, heartbeat lease renewal and fenced reports; the lease reaper, armed only after extending leases on startup; worker executors for `delay`, `cpu-hash`, `mock-inference` and `fail` with slots, timeouts, cancellation and graceful shutdown. Verified by 197 tests (160 control plane, 37 worker), including completion racing lease expiry (8 × 40 attempts against 4 concurrent reapers) and heartbeats racing the reaper on real PG 18, and end to end: a worker killed with `kill -9` mid-job was recovered and the job finished on another worker (FAILURE_SEMANTICS.md). The compose images were not built in the development environment; CI builds them. Phase 6 done (2026-10-02): revive with a fresh attempt budget, checkpoints with the `staged` workload and resume after the last committed stage, the `memory` workload, the `http` workload with an SSRF guard that runs inside the HTTP client's DNS resolver, and Retry-After for RATE_LIMITED. Verified by the race tests the phase asks for (cancellation racing the real scheduler, a retry placement and a failure report; the retry budget with schedulers, failures and the reaper running at once; 16 concurrent revives; a checkpoint racing lease recovery) and live: a staged job whose worker was killed after stage 1 resumed on another worker after stage 1, a revived DEAD job succeeded, a 20 s Retry-After was honoured, and `169.254.169.254` and `localhost` were refused.
 
 | Phase | Acceptance criteria |
 |---|---|

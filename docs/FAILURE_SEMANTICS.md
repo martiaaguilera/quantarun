@@ -1,9 +1,9 @@
 # Failure semantics
 
 What happens when an attempt does not simply succeed. The rules are in `SPEC.md` §3, §4 and §8, and the proofs are in
-`INVARIANTS.md`. This document explains them with worked examples. First version (Phase 5): it covers leases, lost
-workers, reported failures, timeouts and cancellation. Checkpoints and the `http`, `memory` and `staged` workloads
-come in Phase 6.
+`INVARIANTS.md`. This document explains them with worked examples. It covers leases, lost workers, reported
+failures, timeouts and cancellation (Phase 5), plus revive, checkpoints, Retry-After and the `http`, `memory` and
+`staged` workloads (Phase 6).
 
 ## The guarantee
 
@@ -11,7 +11,9 @@ come in Phase 6.
 when a worker is cut off from the control plane, keeps running, and the job is retried elsewhere. Only one attempt can
 ever *commit* an outcome. The other attempt's report is rejected with `409 ATTEMPT_NOT_ACTIVE`, because the attempt
 id is the fencing token (ADR-0002). Workloads with external side effects must therefore be idempotent or tolerate
-duplicates. None of the Phase 5 workloads (`delay`, `cpu-hash`, `mock-inference`, `fail`) has side effects.
+duplicates. Of the built-in workloads only `http` reaches the outside world, and it allows only GET and HEAD, which
+are safe to repeat. The others (`delay`, `cpu-hash`, `mock-inference`, `fail`, `memory`, `staged`) have no external
+side effects; `staged` writes only its own checkpoints, which are fenced.
 
 ## Who decides what
 
@@ -25,6 +27,12 @@ duplicates. None of the Phase 5 workloads (`delay`, `cpu-hash`, `mock-inference`
 | Worker shut down gracefully before the attempt finished | worker (after its grace period) | FAILED | TRANSIENT | retry with backoff |
 | Job cancelled while running | worker sees it in the heartbeat response | CANCELLED | – | job CANCELLED |
 | Lease expired (worker crashed, hung or partitioned) | control plane (lease reaper) | LOST | WORKER_LOST | retry **at once**, or CANCELLED if a cancel was pending |
+| Out of memory in the `memory` workload | worker | FAILED | RESOURCE_EXHAUSTED | retry with backoff |
+| `http`: target refused by the SSRF guard, bad URL or method | worker | FAILED | INVALID_INPUT | job FAILED |
+| `http`: 429 | worker | FAILED | RATE_LIMITED, with the provider's Retry-After | retry after max(Retry-After, backoff) |
+| `http`: 502, 503, 504 / other 5xx / 408 / other 4xx | worker | FAILED | PROVIDER_UNAVAILABLE / TRANSIENT / TIMEOUT / NON_RETRYABLE | per class |
+| `http`: connection failure / timeout | worker | FAILED | TRANSIENT / TIMEOUT | retry with backoff |
+| A checkpoint is rejected (the attempt was recovered meanwhile) | worker | – (no report) | – | the control plane already decided |
 
 A worker can never report `WORKER_LOST` (400 `INVALID_REPORT`): a worker that is reporting is evidently not lost.
 A FAILED report must carry a failure class, and other outcomes must not.
@@ -37,8 +45,21 @@ Implemented in `RetryPolicy` (pure, seeded randomness in tests):
 3. The attempt budget is exhausted (`attemptNo >= max_attempts`): the job ends DEAD (I9). Only an explicit revive
    (Phase 6) runs it again.
 4. `WORKER_LOST`: the job goes RETRY_WAIT with no delay. The work did not fail, only its host did.
-5. Anything else: RETRY_WAIT with full-jitter exponential backoff, a random delay in
+5. RATE_LIMITED with a Retry-After: RETRY_WAIT for max(Retry-After, backoff). Retrying sooner only earns another 429.
+   Retry-After is capped at 10 minutes, and a worker may send it only with RATE_LIMITED.
+6. Anything else: RETRY_WAIT with full-jitter exponential backoff, a random delay in
    `[0, min(60 s, 1 s × 2^(attempt-1))]`.
+
+**Revive.** `POST /api/v1/jobs/{id}/revive` moves a DEAD job back to QUEUED with a fresh budget of `max_attempts`. The
+earlier attempts stay in history and attempt numbers keep counting (a revived job with `max_attempts = 2` has attempts
+1–2, then 3–4). Its checkpoints stay too, so a revived staged job resumes. Only DEAD jobs can be revived (409
+`JOB_NOT_DEAD` otherwise), at most 10 times (409 `REVIVE_LIMIT_REACHED`); concurrent revives revive once.
+
+**Checkpoints.** Only the `staged` workload checkpoints. After each stage the worker commits the stage index and a
+small result (≤ 8 KiB). The control plane accepts it only from the RUNNING attempt of the worker that owns it, only for
+the next stage, and never rewrites a committed stage; a repeated identical commit is answered as already committed. A
+retry gets the last committed stage with its assignment and starts after it; the timeline's STARTED event says
+`resume: from zero` or `resume: after stage k`.
 
 Every decision is stored on the attempt that ended (`retry_decision`), and the job timeline records
 `ATTEMPT_FAILED` or `ATTEMPT_LOST` followed by `RETRY_SCHEDULED`, `FAILED`, `DEAD` or `CANCELLED`.
@@ -87,6 +108,44 @@ have declared that healthy work lost and run it again.
 worker sees the attempt in `cancelAttemptIds` on its next heartbeat (≤ 3 s), interrupts it, and reports CANCELLED.
 If the worker never answers, lease expiry ends the job as CANCELLED instead of retrying it.
 
+**A staged job resumes on another worker** (2026-10-02, commit `44c3330`). Five 4-second stages; the worker running
+it was killed with `kill -9` after stages 0 and 1 were committed:
+
+```
+15:26:43.690 STARTED               resume: from zero          (attempt 1, worker-cpu)
+15:26:47.760 CHECKPOINT_COMMITTED  stage 0
+15:26:51.798 CHECKPOINT_COMMITTED  stage 1
+             (worker-cpu killed at 15:26:53)
+15:27:08.582 ATTEMPT_LOST          WORKER_LOST
+15:27:08.582 RETRY_SCHEDULED       retry after 0 ms
+15:27:09.206 STARTED               resume: after stage 1      (attempt 2, another worker)
+15:27:13.256 CHECKPOINT_COMMITTED  stage 2
+15:27:17.287 CHECKPOINT_COMMITTED  stage 3
+15:27:21.307 CHECKPOINT_COMMITTED  stage 4
+15:27:21.365 SUCCEEDED             executedStages 3, resumedAfterStage 1
+```
+
+The final digest chains every stage's output, so it equals the digest of an uninterrupted run only if no stage was
+skipped or repeated (`StagedWorkloadTest`).
+
+**Revive, live.** `fail {TRANSIENT, succeedOnAttempt: 3}` with `max_attempts = 2` went DEAD after 2 attempts; after a
+revive it ran attempt 3 (the first of the new budget) and succeeded.
+
+**Retry-After, live.** `fail {RATE_LIMITED, retryAfterMillis: 20000}` failed at 15:27:32 and became runnable again at
+15:27:52.
+
+## The http workload and SSRF
+
+The worker resolves the target and filters its addresses **inside the HTTP client's DNS resolver** (Spring Boot's
+`InetAddressFilter` on Apache HttpClient 5), so the addresses checked are the ones the connection uses. A separate
+"resolve, check, then connect" would let DNS rebinding swap in an internal address between the check and the connect.
+Refused: loopback, RFC 1918 private ranges, link-local (including cloud metadata at 169.254.169.254), CGNAT, IPv6
+unique-local, multicast and the other special-purpose ranges. IP literals are also refused before any connection is
+attempted. Redirects are not followed. An operator can allow specific internal IPs or CIDRs
+(`QUANTARUN_WORKER_HTTP_ALLOWED_PRIVATE_ADDRESSES`), never hostnames. The response body is hashed and counted (up to
+1 MiB), never stored. Live check: jobs targeting `169.254.169.254` and `localhost` both ended FAILED with INVALID_INPUT,
+"the target address is not allowed".
+
 ## Races and who wins
 
 | Race | Outcome | Proof |
@@ -96,6 +155,10 @@ If the worker never answers, lease expiry ends the job as CANCELLED instead of r
 | A late report after recovery | 409 `ATTEMPT_NOT_ACTIVE`; the worker drops it and does not retry | `report_afterLeaseRecovery_isFencedWith409` |
 | The same report delivered twice | The second gets the recorded outcome (200) | `report_duplicateIsAnsweredIdempotently_aDifferentOutcomeIsRejected` |
 | A retired (OFFLINE) worker comes back | 409 on claim, heartbeat and report; it must register again under a new id | `retiredWorker_cannotClaimRenewOrReport` |
+| Cancel races the scheduler placing the job | The job ends CANCELLED, or SCHEDULED with the cancel flagged, which the worker then honours; never placed after a cancel | `cancelRacingTheRealScheduler_neverLosesTheCancellation`, `cancelRacingARetryPlacement_neverLosesTheCancellation` |
+| Cancel races a failure report | Report first: RETRY_WAIT, then the cancel ends it. Cancel first: the failure's retry decision sees the flag. Either way CANCELLED, never retried | `cancelRacingAFailureReport_alwaysEndsCancelled` |
+| A checkpoint races lease recovery | Both lock the attempt row: the checkpoint commits while the attempt still runs, or is refused because it no longer does | `checkpointRacingLeaseRecovery_isNeverCommittedByARecoveredAttempt` |
+| Concurrent revives | One conditional update matches; the others get 409 | `concurrentRevives_reviveExactlyOnce` |
 
 ## Worker-side behaviour
 

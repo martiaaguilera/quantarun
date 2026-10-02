@@ -95,6 +95,8 @@ Transaction semantics per operation:
 | **Heartbeat / lease renewal** | Update `worker_heartbeats`; then lock the worker's renewable attempts `ORDER BY id FOR UPDATE` (ASSIGNED ones, plus the RUNNING ones the worker reports, all with `lease_expires_at > now()`) and push their leases forward | Never revives an already-expired lease (the predicate is re-checked after a lock wait); renewal and reaper exclude each other through the row lock on the attempt; the id order keeps overlapping heartbeats from deadlocking (ENGINEERING_LOG) |
 | **Report outcome** | Lock the attempt row, verify it is active and owned by the worker, finish it, release the reservation on the worker row, apply the job transition or retry decision, and append an event | Completion and lease expiry both need the attempt row lock, so exactly one wins; the loser sees a non-active attempt and gets `409`. A repeated identical report returns the recorded outcome |
 | **Lease reaper** | `SELECT ... FROM job_attempts WHERE status IN (ASSIGNED,RUNNING) AND lease_expires_at < now() ORDER BY lease_expires_at FOR UPDATE SKIP LOCKED LIMIT n`, re-sorted by worker id, then the same finish path with `WORKER_LOST`. Runs every second, only after active leases were extended at startup | The same code path as a failure report, so there is one release implementation. Several reapers can run safely; worker-id order keeps their worker locks in the global order. The startup extension means control-plane downtime never counts against workers |
+| **Checkpoint** | Lock the attempt row, verify it is RUNNING and owned by the worker, check the stage is the last committed one plus one, insert the stage and an event | The attempt row lock serialises it against the reaper and against duplicates; only one attempt per job is active (I3), and `PRIMARY KEY (job_id, stage_index)` is the last guard (I14) |
+| **Revive** | `UPDATE jobs SET status='QUEUED', budget_start=attempt_count, revive_count=revive_count+1, ... WHERE id=? AND status='DEAD' AND revive_count < 10` | One conditional statement: of concurrent revives exactly one matches; the budget CHECK is stated per budget (I9, I13) |
 | **Cancel** | Queued/retry-wait jobs: a conditional update to CANCELLED. Active jobs: set `cancel_requested_at`; the worker is told in its heartbeat response | Scheduling reads only QUEUED/RETRY_WAIT rows under lock, so a concurrently cancelled job cannot be placed |
 
 **Why heartbeats have their own table.** The scheduler locks worker rows `FOR UPDATE` while reserving
@@ -114,8 +116,9 @@ plane acts on the authenticated worker id, never a client-supplied one.
 3. `POST deregister`: on graceful shutdown. Leaves immediately with nothing reserved, otherwise drains first.
 4. `POST claim`: returns up to `maxAssignments` ASSIGNED attempts of this worker with their payloads, and starts them
    (RUNNING). The worker polls it every 500 ms while it has free slots, and at once after a claim that returned work.
-   Long polling was not needed at this scale. The last checkpoint joins the assignment in Phase 6.
-5. `POST attempts/{id}/checkpoints` and `POST attempts/{id}/report`: fenced by attempt id + worker id.
+   Long polling was not needed at this scale.
+5. `POST attempts/{id}/checkpoints` and `POST attempts/{id}/report`: fenced by attempt id + worker id. A claim
+   hands over the job's last committed checkpoint, so a retry of a staged workload resumes after it.
 
 Liveness: health (HEALTHY → LATE → OFFLINE) is derived from heartbeat age against the database clock. The liveness
 monitor retires silent registrations, but never during the startup grace period after a control-plane restart.
