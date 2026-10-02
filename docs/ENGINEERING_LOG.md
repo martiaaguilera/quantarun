@@ -2,6 +2,51 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-02 — Two deadlocks the lease race tests found
+Both appeared as `ERROR: deadlock detected` in the new race tests on real PostgreSQL 18. Neither had shown up in any
+single-threaded test.
+1. **Overlapping heartbeats.** Lease renewal was one multi-row `UPDATE ... WHERE worker_id = ? AND ...`. PostgreSQL
+   locks rows in whatever order the plan visits them, so two renewals for the same worker could each hold a row the
+   other needed. One worker heartbeats sequentially, but a client-side timeout followed by a retry, or two
+   control-plane instances, overlap for real. `heartbeatRacingTheReaper_neverRevivesAnExpiredLease` failed on its first
+   run. Fix: a CTE selects the renewable rows `ORDER BY id FOR UPDATE`, then the UPDATE joins it, so every renewal locks
+   in the same order and they queue instead of deadlocking. The predicate is re-checked after any wait, so an attempt
+   the reaper recovered meanwhile is still skipped (I10).
+2. **Reapers across several workers.** A reaper batch was ordered by `lease_expires_at`. Ending each attempt locks
+   its worker row (to release the reservation) and holds it until commit, so a batch that spans workers takes worker
+   locks in expiry order, not id order. Two reapers could then wait on each other's worker rows, and so could a reaper
+   and the scheduler, which locks workers in id order. Fix: lock the oldest expired leases with SKIP LOCKED as before,
+   then return the batch `ORDER BY worker_id, id`. Sorting in SQL rather than Java matters: `UUID.compareTo` compares
+   signed longs and disagrees with PostgreSQL's byte order. Verified by experiment: with expiry order restored,
+   `completionRacingLeaseExpiry_hasExactlyOneWinnerPerAttempt` hit six deadlocks in one run; with worker order, none in
+   repeated runs.
+
+## 2026-10-02 — A draining worker must still claim what was placed on it
+The Phase 5 plan said a DRAINING worker should be refused at `/claim`. That would strand work: the scheduler can place
+an attempt just before an operator drains the worker. Heartbeats renew ASSIGNED leases implicitly (the worker has not
+seen them yet), so the lease would never expire and the job would sit in SCHEDULED forever. Draining means "no new
+placements", and the scheduler already enforces that. So a draining worker claims whatever is already assigned to it.
+Only retired registrations (OFFLINE, DEREGISTERED) are refused, which is what I11 needs. Test:
+`drainingWorker_stillClaimsWhatWasPlacedOnItBeforeTheDrain`.
+
+## 2026-10-02 — Lease recovery, measured end to end
+Run with host processes (control plane plus three workers as JVMs, PostgreSQL in Docker) because this environment
+cannot build the images: Maven inside `docker build` has no route to Maven Central here. CI's compose job builds and
+starts the real images. Results:
+- `kill -9` of the worker running a 20 s `delay` job: lease expiry after 15.2 s, then ATTEMPT_LOST and
+  RETRY_SCHEDULED (0 ms), a new placement on another worker 0.5 s later, then SUCCEEDED. Full timeline in
+  FAILURE_SEMANTICS.md.
+- Control plane killed for about 29 s (longer than the 15 s lease) while a job ran: on startup it extended the one
+  active lease before reaping, and the job finished with a single attempt. This is the lease counterpart of the worker
+  startup grace (2026-10-01 entry), and it worked the first time because that entry had predicted it.
+- SIGTERM to a busy worker: it went DRAINING, finished the attempt, reported it, then deregistered.
+
+Hot-path plans (`EXPLAIN ANALYZE`, 200,004 finished attempts plus 50 running, PostgreSQL 18.6, 4 vCPU Xeon @ 2.1 GHz
+cloud container, commit `91f91d0`): the reaper's expired-lease batch is an index scan on the partial
+`job_attempts_lease_idx` (0.19 ms); renewing 46 leases takes 1.65 ms; an empty claim takes 0.11 ms. The partial indexes
+keep finished history out of every one of them. Renewal joins its CTE with a nested loop, quadratic in the number of a
+worker's attempts, but that number is capped by its slots (≤ 256).
+
 ## 2026-10-02 — Self-invocation silently disabled @Transactional; MANDATORY caught it
 Every scheduling test passed, but in the compose stack nothing was ever placed. `SchedulingCycle` had a convenience
 overload `runCycle()` that called `this.runCycle(policy)`. A call on `this` bypasses the Spring proxy, so the

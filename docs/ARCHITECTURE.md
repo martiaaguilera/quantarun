@@ -40,14 +40,15 @@ Packages under `io.github.martiaaguilera.quantarun`, verified by Spring Modulith
 | `projects` | projects, API keys, quotas |
 | `jobs` | job submission, idempotency, the state machine (`JobStatus`), attempts, events, checkpoints |
 | `workers` | registration, heartbeats, health, draining, capacity rows |
+| `execution` | the worker protocol's claim, heartbeat (with lease renewal) and report endpoints; separate because it needs both `workers` and `jobs`, and `jobs` already depends on `workers` |
 | `scheduler` | the scheduling loop, the snapshot loader, decision records |
 | `scheduler.policy` | **pure** policies (no Spring, no SQL); shared with `simulation` |
-| `reliability` | the lease reaper, retry/backoff decisions, failure classification |
+| `reliability` | the lease reaper (retry decisions live with the attempt-ending transaction in `jobs`) |
 | `simulation` | scenarios, trace generation, the discrete-event engine, metrics |
 | `chaos` | predefined fault scenarios targeting QuantaRun's own workers |
 | `web` | cross-cutting HTTP concerns: Problem Details, security filter, SSE |
 
-Allowed dependencies point inward: `scheduler → jobs, workers, projects`; `reliability → jobs, workers`;
+Allowed dependencies point inward: `scheduler → jobs, workers, projects`; `execution → jobs, workers`; `reliability → jobs`; `jobs → workers`;
 `simulation → scheduler.policy` only. The policies depend on nothing except their own snapshot records.
 
 ## 3. Persistence
@@ -91,9 +92,9 @@ Transaction semantics per operation:
 | **Submit** | `INSERT jobs ... ON CONFLICT (project_id, idempotency_key) DO NOTHING RETURNING id`; if no row came back, read the existing row in a new statement and compare the request hash | Concurrent duplicates serialize on the unique index; exactly one insert wins |
 | **Schedule cycle** | Lock a window of runnable jobs (`FOR UPDATE SKIP LOCKED`), lock ACTIVE+HEALTHY workers (`FOR UPDATE`, id order), run the pure policy, insert attempts, add to `reserved_*`, set jobs to SCHEDULED, insert decisions and events | Other schedulers skip locked jobs rather than queue behind them; worker row locks serialize reservations; the CHECK constraints reject any overcommit |
 | **Claim** | `UPDATE job_attempts SET status='RUNNING' WHERE id=? AND worker_id=? AND status='ASSIGNED'`, plus the job `SCHEDULED → RUNNING` | Fenced by attempt id + worker id; a stale or duplicate claim changes 0 rows |
-| **Heartbeat / lease renewal** | Upsert `worker_heartbeats`; `UPDATE job_attempts SET lease_expires_at = now()+lease WHERE worker_id=? AND status IN (ASSIGNED,RUNNING) AND lease_expires_at > now()` | Never revives an already-expired lease; renewal and reaper exclude each other through the row lock on the attempt |
+| **Heartbeat / lease renewal** | Update `worker_heartbeats`; then lock the worker's renewable attempts `ORDER BY id FOR UPDATE` (ASSIGNED ones, plus the RUNNING ones the worker reports, all with `lease_expires_at > now()`) and push their leases forward | Never revives an already-expired lease (the predicate is re-checked after a lock wait); renewal and reaper exclude each other through the row lock on the attempt; the id order keeps overlapping heartbeats from deadlocking (ENGINEERING_LOG) |
 | **Report outcome** | Lock the attempt row, verify it is active and owned by the worker, finish it, release the reservation on the worker row, apply the job transition or retry decision, and append an event | Completion and lease expiry both need the attempt row lock, so exactly one wins; the loser sees a non-active attempt and gets `409`. A repeated identical report returns the recorded outcome |
-| **Lease reaper** | `SELECT ... FROM job_attempts WHERE status IN (ASSIGNED,RUNNING) AND lease_expires_at < now() FOR UPDATE SKIP LOCKED LIMIT n`, then the same finish path with `WORKER_LOST` | The same code path as a failure report, so there is one release implementation. Several reapers can run safely |
+| **Lease reaper** | `SELECT ... FROM job_attempts WHERE status IN (ASSIGNED,RUNNING) AND lease_expires_at < now() ORDER BY lease_expires_at FOR UPDATE SKIP LOCKED LIMIT n`, re-sorted by worker id, then the same finish path with `WORKER_LOST`. Runs every second, only after active leases were extended at startup | The same code path as a failure report, so there is one release implementation. Several reapers can run safely; worker-id order keeps their worker locks in the global order. The startup extension means control-plane downtime never counts against workers |
 | **Cancel** | Queued/retry-wait jobs: a conditional update to CANCELLED. Active jobs: set `cancel_requested_at`; the worker is told in its heartbeat response | Scheduling reads only QUEUED/RETRY_WAIT rows under lock, so a concurrently cancelled job cannot be placed |
 
 **Why heartbeats have their own table.** The scheduler locks worker rows `FOR UPDATE` while reserving
@@ -111,8 +112,9 @@ plane acts on the authenticated worker id, never a client-supplied one.
 2. `POST heartbeat` every 3 s, carrying the ids of the worker's active attempts. The response contains
    cancel requests and leases that are no longer valid, which the worker must stop immediately.
 3. `POST deregister`: on graceful shutdown. Leaves immediately with nothing reserved, otherwise drains first.
-4. `POST claim`: long-polls for ASSIGNED attempts on this worker and returns the payload plus the last
-   checkpoint.
+4. `POST claim`: returns up to `maxAssignments` ASSIGNED attempts of this worker with their payloads, and starts them
+   (RUNNING). The worker polls it every 500 ms while it has free slots, and at once after a claim that returned work.
+   Long polling was not needed at this scale. The last checkpoint joins the assignment in Phase 6.
 5. `POST attempts/{id}/checkpoints` and `POST attempts/{id}/report`: fenced by attempt id + worker id.
 
 Liveness: health (HEALTHY → LATE → OFFLINE) is derived from heartbeat age against the database clock. The liveness
