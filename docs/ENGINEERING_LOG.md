@@ -2,6 +2,31 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-02 — Fair share: the window starved the tenant before the policy saw it
+The first design only reordered jobs inside the planner. Walking through the brief's test case (tenant A queues
+10,000 jobs, then tenant B queues 10) showed it could not work: the cycle locks a window of the 200 oldest runnable
+jobs, which were all A's, so the planner never saw B's jobs at all. The fairness had to start in SQL. FAIR_SHARE now
+locks a round-robin window: one `LATERAL` index probe per project on `(project_id, available_at, id)` for runnable
+rows, ranked within each project, ordered by rank. `underFifo_theSameFloodStarvesTheLightTenant` keeps the contrast
+visible: under FIFO, B gets nothing in the first cycle.
+
+## 2026-10-02 — Quotas and virtual times need no extra locks: worker locks already serialise cycles
+Two concurrent cycles could each read "4 of 5 running" and both place, overrunning a quota, or both read a project's
+virtual time and lose one charge. Locking project rows in the cycle would add a lock to the global order and a hot row.
+That turned out to be unnecessary: every cycle locks all live workers `FOR UPDATE` before planning and holds them until
+it commits, so cycles that can place work are already serialised. Reading usage and virtual times *after* that lock
+makes them consistent for the whole cycle. The constraint is now documented where it is relied on (`SchedulingCycle`,
+`JobPlacement.activeUsage`, `FairShareRepository`), and `runningQuota_holdsUnderConcurrentCycles` checks it with
+8 concurrent cycles. If the cycle ever stops locking every worker (for example, sharded scheduling), this argument
+breaks and the quota needs its own lock.
+
+## 2026-10-02 — The same query, 12.5 ms then 2 ms: visibility map
+`EXPLAIN ANALYZE` of the round-robin window right after bulk-inserting 210,000 jobs chose bitmap scans and sorted each
+project's whole backlog (12.5 ms). Minutes later the same statement used an index-only scan on
+`jobs_runnable_by_project_idx` (1.9–2.6 ms over three runs). Autovacuum had run in between and set the visibility map,
+which an index-only scan needs. Lesson for Phase 13: measure plans after `VACUUM ANALYZE`, and say so, or the numbers
+describe a state production rarely sits in.
+
 ## 2026-10-02 — SSRF guard: filter inside the resolver, and the test that checks it
 The http workload needed a guard that DNS rebinding cannot bypass. Resolving the host, checking the addresses and then
 connecting (letting the client resolve again) leaves a window in which a hostile DNS server can answer with a public
