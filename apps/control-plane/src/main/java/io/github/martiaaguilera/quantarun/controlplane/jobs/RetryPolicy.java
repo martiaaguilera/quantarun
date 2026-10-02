@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.random.RandomGenerator;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Decides what happens to a job after an attempt ends without success (docs/SPEC.md §8, FAILURE_SEMANTICS.md). Pure:
@@ -33,15 +34,21 @@ public record RetryPolicy(Duration baseDelay, Duration maxDelay) {
         }
     }
 
+    /** Upper bound on an honoured Retry-After: a provider asking for hours is treated as asking for this long. */
+    static final Duration MAX_RETRY_AFTER = Duration.ofMinutes(10);
+
     /**
-     * @param attemptNo the attempt that just ended (1-based)
+     * @param attemptNo the attempt that just ended, counted within the current budget (1-based; a revive starts a new
+     *     budget at 1)
      * @param cancelRequested a cancel request always wins: the job ends CANCELLED and is never retried (invariant I12)
+     * @param retryAfter how long a rate-limited provider asked to wait, if it said; only used for RATE_LIMITED
      */
     public Decision decide(
             FailureClass failureClass,
             int attemptNo,
             int maxAttempts,
             boolean cancelRequested,
+            @Nullable Duration retryAfter,
             RandomGenerator random) {
         if (cancelRequested) {
             return new Decision.GiveUp(JobStatus.CANCELLED, "cancel requested while the attempt was active");
@@ -58,7 +65,13 @@ public record RetryPolicy(Duration baseDelay, Duration maxDelay) {
             // The work itself did not fail; only its host did. Waiting would only add latency.
             return new Decision.Retry(Duration.ZERO);
         }
-        return new Decision.Retry(fullJitterBackoff(attemptNo, random));
+        var backoff = fullJitterBackoff(attemptNo, random);
+        if (failureClass == FailureClass.RATE_LIMITED && retryAfter != null && !retryAfter.isNegative()) {
+            // Retrying sooner than the provider asked only earns another 429.
+            var honoured = retryAfter.compareTo(MAX_RETRY_AFTER) > 0 ? MAX_RETRY_AFTER : retryAfter;
+            return new Decision.Retry(honoured.compareTo(backoff) > 0 ? honoured : backoff);
+        }
+        return new Decision.Retry(backoff);
     }
 
     /**

@@ -9,6 +9,7 @@ import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.AttemptOutcome;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
 import jakarta.validation.Valid;
+import java.time.Duration;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The execution half of the worker protocol: heartbeat with lease renewal, claim, and report. It lives in its own
@@ -32,10 +34,12 @@ class ExecutionController {
 
     private final WorkerRegistry registry;
     private final JobAttempts attempts;
+    private final JsonMapper json;
 
-    ExecutionController(WorkerRegistry registry, JobAttempts attempts) {
+    ExecutionController(WorkerRegistry registry, JobAttempts attempts, JsonMapper json) {
         this.registry = registry;
         this.attempts = attempts;
+        this.json = json;
     }
 
     /**
@@ -71,7 +75,12 @@ class ExecutionController {
                         claimed.attemptNo(),
                         claimed.workloadType(),
                         claimed.payload(),
-                        claimed.timeoutSeconds()))
+                        claimed.timeoutSeconds(),
+                        claimed.lastCheckpoint() == null
+                                ? null
+                                : new WorkerProtocol.Checkpoint(
+                                        claimed.lastCheckpoint().stageIndex(),
+                                        claimed.lastCheckpoint().result())))
                 .toList();
         return new WorkerProtocol.ClaimResponse(assignments);
     }
@@ -84,8 +93,15 @@ class ExecutionController {
         var workerId = principal.requireRegisteredWorker();
         requireConsistentFailureClass(request);
         registry.requireLive(workerId);
+        var retryAfter = request.retryAfterMillis() == null ? null : Duration.ofMillis(request.retryAfterMillis());
         return switch (attempts.report(
-                workerId, attemptId, request.outcome(), request.failureClass(), request.message(), request.result())) {
+                workerId,
+                attemptId,
+                request.outcome(),
+                request.failureClass(),
+                request.message(),
+                request.result(),
+                retryAfter)) {
             case JobAttempts.ReportResult.Applied(var id, var attemptStatus, var jobStatus) ->
                 new WorkerProtocol.ReportResponse(id, attemptStatus.name(), jobStatus.name());
             case JobAttempts.ReportResult.AlreadyRecorded(var id, var attemptStatus, var jobStatus) ->
@@ -96,6 +112,51 @@ class ExecutionController {
                         "ATTEMPT_NOT_ACTIVE",
                         "Attempt " + id + " already ended as " + attemptStatus + "; this report was not applied.");
             case JobAttempts.ReportResult.NotFound(var id) ->
+                throw new ApiException(
+                        HttpStatus.NOT_FOUND,
+                        "ATTEMPT_NOT_FOUND",
+                        "Attempt " + id + " is not assigned to this worker.");
+            case JobAttempts.ReportResult.NotClaimed(var id) ->
+                throw new ApiException(
+                        HttpStatus.CONFLICT,
+                        "ATTEMPT_NOT_CLAIMED",
+                        "Attempt " + id + " was never claimed, so it has no outcome to report.");
+        };
+    }
+
+    /**
+     * Commits one stage of a staged workload. The 8 KiB cap is checked here so an oversized stage result is a clear
+     * client error rather than a database constraint failure.
+     */
+    @PostMapping("/attempts/{attemptId}/checkpoints")
+    WorkerProtocol.CheckpointResponse checkpoint(
+            @RequestAttribute(WorkerAuthenticationFilter.PRINCIPAL_ATTRIBUTE) WorkerPrincipal principal,
+            @PathVariable UUID attemptId,
+            @Valid @RequestBody WorkerProtocol.CheckpointRequest request) {
+        var workerId = principal.requireRegisteredWorker();
+        registry.requireLive(workerId);
+        if (json.writeValueAsBytes(request.result()).length > JobAttempts.MAX_CHECKPOINT_BYTES) {
+            throw new ApiException(
+                    HttpStatus.BAD_REQUEST,
+                    "CHECKPOINT_TOO_LARGE",
+                    "A checkpoint result may be at most " + JobAttempts.MAX_CHECKPOINT_BYTES + " bytes.");
+        }
+        return switch (attempts.commitCheckpoint(workerId, attemptId, request.stageIndex(), request.result())) {
+            case JobAttempts.CheckpointResult.Committed(var stage) ->
+                new WorkerProtocol.CheckpointResponse(stage, false);
+            case JobAttempts.CheckpointResult.AlreadyCommitted(var stage) ->
+                new WorkerProtocol.CheckpointResponse(stage, true);
+            case JobAttempts.CheckpointResult.OutOfOrder(var expected) ->
+                throw new ApiException(
+                        HttpStatus.CONFLICT,
+                        "CHECKPOINT_OUT_OF_ORDER",
+                        "Stage " + request.stageIndex() + " cannot be committed; the next stage is " + expected + ".");
+            case JobAttempts.CheckpointResult.NotActive(var status) ->
+                throw new ApiException(
+                        HttpStatus.CONFLICT,
+                        "ATTEMPT_NOT_ACTIVE",
+                        "Attempt " + attemptId + " is " + status + "; only a running attempt can commit checkpoints.");
+            case JobAttempts.CheckpointResult.NotFound(var id) ->
                 throw new ApiException(
                         HttpStatus.NOT_FOUND,
                         "ATTEMPT_NOT_FOUND",
@@ -117,6 +178,9 @@ class ExecutionController {
         }
         if (request.failureClass() == FailureClass.WORKER_LOST) {
             throw invalidReport("WORKER_LOST is assigned by the control plane and cannot be reported.");
+        }
+        if (request.retryAfterMillis() != null && request.failureClass() != FailureClass.RATE_LIMITED) {
+            throw invalidReport("retryAfterMillis is only meaningful for a RATE_LIMITED failure.");
         }
     }
 

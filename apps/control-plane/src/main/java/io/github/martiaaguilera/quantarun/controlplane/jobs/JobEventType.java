@@ -15,5 +15,9 @@ public enum JobEventType {
     FAILED,
     DEAD,
     CANCEL_REQUESTED,
-    CANCELLED
+    CANCELLED,
+    /** A staged workload committed one stage; a later attempt resumes after it. */
+    CHECKPOINT_COMMITTED,
+    /** An operator or project member revived a DEAD job with a fresh attempt budget. */
+    REVIVED
 }

@@ -1,6 +1,7 @@
 package io.github.martiaaguilera.quantarun.controlplane.jobs;
 
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.AttemptRepository;
+import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.CheckpointRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobEventRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobRepository;
 import io.github.martiaaguilera.quantarun.controlplane.security.Caller;
@@ -18,11 +19,17 @@ public class JobQueries {
     private final JobRepository jobs;
     private final JobEventRepository events;
     private final AttemptRepository attempts;
+    private final CheckpointRepository checkpoints;
 
-    JobQueries(JobRepository jobs, JobEventRepository events, AttemptRepository attempts) {
+    JobQueries(
+            JobRepository jobs,
+            JobEventRepository events,
+            AttemptRepository attempts,
+            CheckpointRepository checkpoints) {
         this.jobs = jobs;
         this.events = events;
         this.attempts = attempts;
+        this.checkpoints = checkpoints;
     }
 
     /** A job of another project is reported as missing: its existence is not disclosed. */
@@ -54,5 +61,10 @@ public class JobQueries {
     public List<AttemptRepository.AttemptView> attempts(Caller caller, UUID jobId) {
         get(caller, jobId);
         return attempts.findByJob(jobId);
+    }
+
+    public List<CheckpointRepository.Checkpoint> checkpoints(Caller caller, UUID jobId) {
+        get(caller, jobId);
+        return checkpoints.findAll(jobId);
     }
 }

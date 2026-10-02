@@ -162,7 +162,7 @@ class LeaseRecoveryTest {
         assertThat(attempts.renewLeases(worker.id(), List.of(attempt)).cancelRequested())
                 .containsExactly(attempt);
 
-        var result = attempts.report(worker.id(), attempt, AttemptOutcome.CANCELLED, null, null, null);
+        var result = attempts.report(worker.id(), attempt, AttemptOutcome.CANCELLED, null, null, null, null);
 
         assertThat(result).isInstanceOf(ReportResult.Applied.class);
         assertThat(fixture.jobStatus(job)).isEqualTo("CANCELLED");
@@ -177,7 +177,8 @@ class LeaseRecoveryTest {
         var attempt = fixture.latestAttempt(job);
         attempts.claim(worker.id(), 1);
 
-        attempts.report(worker.id(), attempt, AttemptOutcome.FAILED, FailureClass.INVALID_INPUT, "bad payload", null);
+        attempts.report(
+                worker.id(), attempt, AttemptOutcome.FAILED, FailureClass.INVALID_INPUT, "bad payload", null, null);
 
         assertThat(fixture.jobStatus(job)).isEqualTo("FAILED");
         assertThat(fixture.eventCount(job, "FAILED")).isEqualTo(1);
@@ -203,7 +204,8 @@ class LeaseRecoveryTest {
                 fixture.expireLease(attempt);
                 attempts.recoverExpiredLeases(10);
             } else {
-                attempts.report(worker.id(), attempt, AttemptOutcome.FAILED, FailureClass.TRANSIENT, "boom", null);
+                attempts.report(
+                        worker.id(), attempt, AttemptOutcome.FAILED, FailureClass.TRANSIENT, "boom", null, null);
             }
             var expected = attemptNo < maxAttempts ? "RETRY_WAIT" : "DEAD";
             assertThat(fixture.jobStatus(job)).as("after attempt %d", attemptNo).isEqualTo(expected);
@@ -275,7 +277,8 @@ class LeaseRecoveryTest {
             var reaped = new AtomicInteger();
             var tasks = new ArrayList<Callable<Void>>();
             owners.forEach((attempt, worker) -> tasks.add(() -> {
-                reported.put(attempt, attempts.report(worker, attempt, AttemptOutcome.SUCCEEDED, null, null, null));
+                reported.put(
+                        attempt, attempts.report(worker, attempt, AttemptOutcome.SUCCEEDED, null, null, null, null));
                 return null;
             }));
             for (int reaper = 0; reaper < 4; reaper++) {

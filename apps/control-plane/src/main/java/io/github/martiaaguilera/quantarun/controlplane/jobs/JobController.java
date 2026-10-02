@@ -75,6 +75,8 @@ class JobController {
             List<String> requiredLabels,
             int maxAttempts,
             int attemptCount,
+            int attemptsInBudget,
+            int reviveCount,
             int timeoutSeconds,
             Instant availableAt,
             @Nullable Instant deadline,
@@ -99,6 +101,8 @@ class JobController {
                     job.requiredLabels(),
                     job.maxAttempts(),
                     job.attemptCount(),
+                    job.attemptsInBudget(),
+                    job.reviveCount(),
                     job.timeoutSeconds(),
                     job.availableAt(),
                     job.deadlineAt(),
@@ -119,6 +123,8 @@ class JobController {
             long id, @Nullable UUID attemptId, JobEventType type, Instant occurredAt, ObjectNode details) {}
 
     record CancelResponse(UUID jobId, JobLifecycle.CancelOutcome outcome) {}
+
+    record CheckpointResponse(int stageIndex, UUID attemptId, Instant committedAt, JsonNode result) {}
 
     record AttemptResponse(
             UUID id,
@@ -213,6 +219,21 @@ class JobController {
                         attempt.retryDecision(),
                         attempt.result()))
                 .toList();
+    }
+
+    /** Committed stages of a staged job, in order. Empty for every other workload. */
+    @GetMapping("/{jobId}/checkpoints")
+    List<CheckpointResponse> checkpoints(Caller caller, @PathVariable UUID jobId) {
+        return queries.checkpoints(caller, jobId).stream()
+                .map(checkpoint -> new CheckpointResponse(
+                        checkpoint.stageIndex(), checkpoint.attemptId(), checkpoint.committedAt(), checkpoint.result()))
+                .toList();
+    }
+
+    @PostMapping("/{jobId}/revive")
+    JobResponse revive(Caller caller, @PathVariable UUID jobId) {
+        queries.get(caller, jobId);
+        return JobResponse.from(lifecycle.revive(jobId));
     }
 
     @PostMapping("/{jobId}/cancel")
