@@ -17,6 +17,16 @@ public class ControlPlaneClient {
         }
     }
 
+    /**
+     * The control plane will never apply this report: the attempt already ended (its lease expired and it was
+     * recovered), it is not this worker's, or this registration was retired. Retrying cannot help.
+     */
+    public static final class ReportRejectedException extends RuntimeException {
+        ReportRejectedException(int status) {
+            super("The control plane rejected the report with HTTP " + status);
+        }
+    }
+
     private final RestClient http;
     private final String bootstrapToken;
 
@@ -44,6 +54,36 @@ public class ControlPlaneClient {
                     throw new RegistrationRetiredException();
                 })
                 .body(WorkerProtocol.HeartbeatResponse.class);
+    }
+
+    public WorkerProtocol.ClaimResponse claim(String workerSecret, int maxAssignments) {
+        return http.post()
+                .uri(WorkerProtocol.BASE_PATH + "/claim")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + workerSecret)
+                .body(new WorkerProtocol.ClaimRequest(maxAssignments))
+                .retrieve()
+                .onStatus(status -> status.value() == HttpStatus.CONFLICT.value(), (request, response) -> {
+                    throw new RegistrationRetiredException();
+                })
+                .body(WorkerProtocol.ClaimResponse.class);
+    }
+
+    /** 404 and 409 are final answers (the report is fenced); other 4xx are bugs; 5xx and I/O errors may be retried. */
+    public WorkerProtocol.ReportResponse report(
+            String workerSecret, UUID attemptId, WorkerProtocol.ReportRequest report) {
+        return http.post()
+                .uri(WorkerProtocol.BASE_PATH + "/attempts/{attemptId}/report", attemptId)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + workerSecret)
+                .body(report)
+                .retrieve()
+                .onStatus(
+                        status -> status.value() == HttpStatus.CONFLICT.value()
+                                || status.value() == HttpStatus.NOT_FOUND.value(),
+                        (request, response) -> {
+                            throw new ReportRejectedException(
+                                    response.getStatusCode().value());
+                        })
+                .body(WorkerProtocol.ReportResponse.class);
     }
 
     public void deregister(String workerSecret) {

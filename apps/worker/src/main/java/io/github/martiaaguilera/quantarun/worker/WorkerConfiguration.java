@@ -1,6 +1,8 @@
 package io.github.martiaaguilera.quantarun.worker;
 
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
+import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
+import java.time.Duration;
 import java.util.random.RandomGenerator;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -29,16 +31,31 @@ class WorkerConfiguration {
         return new ControlPlaneClient(http, settings.bootstrapToken());
     }
 
-    @Bean
-    WorkerAgent workerAgent(ControlPlaneClient client, WorkerSettings settings, ObjectProvider<BuildProperties> build) {
-        var version =
-                build.getIfAvailable() == null ? "dev" : build.getIfAvailable().getVersion();
-        return new WorkerAgent(client, settings, version, RandomGenerator.getDefault());
+    /** One execution slot per declared slot: the control plane reserves exactly this many. */
+    @Bean(destroyMethod = "close")
+    AttemptExecutor attemptExecutor(ControlPlaneClient client, WorkerSettings settings) {
+        return new AttemptExecutor(
+                client,
+                settings.capacity().slots(),
+                new AttemptExecutor.ReportPolicy(
+                        settings.reportAttempts(), Duration.ofMillis(200), Duration.ofSeconds(5)),
+                RandomGenerator.getDefault());
     }
 
     @Bean
-    WorkerLifecycleRunner workerLifecycleRunner(WorkerAgent agent) {
-        return new WorkerLifecycleRunner(agent);
+    WorkerAgent workerAgent(
+            ControlPlaneClient client,
+            AttemptExecutor executor,
+            WorkerSettings settings,
+            ObjectProvider<BuildProperties> build) {
+        var version =
+                build.getIfAvailable() == null ? "dev" : build.getIfAvailable().getVersion();
+        return new WorkerAgent(client, executor, settings, version, RandomGenerator.getDefault());
+    }
+
+    @Bean
+    WorkerLifecycleRunner workerLifecycleRunner(WorkerAgent agent, WorkerSettings settings) {
+        return new WorkerLifecycleRunner(agent, settings);
     }
 
     /** Ready only once registered: before that the control plane cannot place work here. */

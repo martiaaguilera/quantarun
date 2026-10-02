@@ -1,0 +1,318 @@
+package io.github.martiaaguilera.quantarun.worker.execution;
+
+import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
+import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.AttemptOutcome;
+import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
+import io.github.martiaaguilera.quantarun.worker.Backoff;
+import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.random.RandomGenerator;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.RestClientException;
+
+/**
+ * Runs claimed attempts, at most one per execution slot, and reports their outcomes.
+ *
+ * <p>Every attempt ends exactly one way. Whoever first sets its stop reason decides: the attempt finishing on its own,
+ * its timeout, a cancel request, a lost lease or a shutdown. Only the winner of that race may interrupt the
+ * execution thread, so a late timeout can never interrupt the thread while it is already reporting a success.
+ *
+ * <p>An attempt stays in {@link #runningAttemptIds()} until its report is done, so heartbeats keep renewing its lease
+ * while a report is being retried.
+ */
+public class AttemptExecutor implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(AttemptExecutor.class);
+
+    /** How an attempt ended, from the worker's point of view. */
+    enum Stop {
+        COMPLETED,
+        TIMED_OUT,
+        CANCELLED,
+        /** The control plane says this worker no longer owns the attempt: stop and never report. */
+        LOST,
+        SHUTDOWN
+    }
+
+    /**
+     * @param attempts how many times a report is sent before giving up; the lease then expires and the control plane
+     *     recovers the attempt, so a lost report costs a retry, never correctness.
+     */
+    public record ReportPolicy(int attempts, Duration baseDelay, Duration maxDelay) {}
+
+    private static final class Running {
+        final WorkerProtocol.Assignment assignment;
+        final String credential;
+        final AtomicReference<@Nullable Stop> stop = new AtomicReference<>();
+        volatile @Nullable Thread thread;
+
+        Running(WorkerProtocol.Assignment assignment, String credential) {
+            this.assignment = assignment;
+            this.credential = credential;
+        }
+    }
+
+    private final ControlPlaneClient controlPlane;
+    private final int slots;
+    private final ReportPolicy reportPolicy;
+    private final RandomGenerator random;
+    private final Map<String, Workload> workloads;
+    private final Map<UUID, Running> running = new ConcurrentHashMap<>();
+    private final ExecutorService threads = Executors.newThreadPerTaskExecutor(
+            Thread.ofVirtual().name("attempt-", 0).factory());
+    private final ScheduledExecutorService timeouts = Executors.newSingleThreadScheduledExecutor(
+            Thread.ofPlatform().name("attempt-timeouts").daemon().factory());
+    private final Object idle = new Object();
+
+    public AttemptExecutor(
+            ControlPlaneClient controlPlane, int slots, ReportPolicy reportPolicy, RandomGenerator random) {
+        this.controlPlane = controlPlane;
+        this.slots = slots;
+        this.reportPolicy = reportPolicy;
+        this.random = random;
+        this.workloads = Stream.of(
+                        new DelayWorkload(), new CpuHashWorkload(), new MockInferenceWorkload(), new FailWorkload())
+                .collect(Collectors.toUnmodifiableMap(Workload::type, Function.identity()));
+    }
+
+    /** Only the claiming thread adds attempts, so this never under-counts what it is about to claim. */
+    public int freeSlots() {
+        return Math.max(0, slots - running.size());
+    }
+
+    public List<UUID> runningAttemptIds() {
+        return List.copyOf(running.keySet());
+    }
+
+    /**
+     * @param credential the registration that claimed it; reports go out under that identity even if the worker has
+     *     registered again since, in which case the control plane rejects them, as it should.
+     */
+    public void start(WorkerProtocol.Assignment assignment, String credential) {
+        var attempt = new Running(assignment, credential);
+        if (running.putIfAbsent(assignment.attemptId(), attempt) != null) {
+            return;
+        }
+        threads.execute(() -> run(attempt));
+    }
+
+    /** The job was cancelled: stop and report CANCELLED. */
+    public void cancel(UUID attemptId) {
+        var attempt = running.get(attemptId);
+        if (attempt != null) {
+            stop(attempt, Stop.CANCELLED);
+        }
+    }
+
+    /** The lease is gone and the attempt was (or is being) recovered: stop and stay silent. */
+    public void abandon(UUID attemptId) {
+        var attempt = running.get(attemptId);
+        if (attempt != null && attempt.stop.getAndSet(Stop.LOST) == null) {
+            interrupt(attempt);
+        }
+    }
+
+    /** This registration was retired, so nothing it runs belongs to it any more. */
+    public void abandonAll() {
+        running.keySet().forEach(this::abandon);
+    }
+
+    /** Shutdown ran out of patience: stop what is left and report it as a transient failure, to be retried elsewhere. */
+    public void stopAll() {
+        running.values().forEach(attempt -> stop(attempt, Stop.SHUTDOWN));
+    }
+
+    /** @return true if nothing is running any more */
+    public boolean awaitIdle(Duration timeout) throws InterruptedException {
+        var deadline = System.nanoTime() + timeout.toNanos();
+        synchronized (idle) {
+            while (!running.isEmpty()) {
+                var remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    return false;
+                }
+                TimeUnit.NANOSECONDS.timedWait(idle, remaining);
+            }
+            return true;
+        }
+    }
+
+    @Override
+    public void close() {
+        timeouts.shutdownNow();
+        threads.shutdownNow();
+    }
+
+    private void run(Running attempt) {
+        var assignment = attempt.assignment;
+        attempt.thread = Thread.currentThread();
+        ScheduledFuture<?> timeout =
+                timeouts.schedule(() -> stop(attempt, Stop.TIMED_OUT), assignment.timeoutSeconds(), TimeUnit.SECONDS);
+        try {
+            var report = execute(attempt);
+            timeout.cancel(false);
+            // Any interrupt meant for the execution is irrelevant now; it must not abort the report's HTTP call.
+            Thread.interrupted();
+            if (report != null) {
+                send(attempt, report);
+            }
+        } finally {
+            timeout.cancel(false);
+            running.remove(assignment.attemptId());
+            synchronized (idle) {
+                idle.notifyAll();
+            }
+        }
+    }
+
+    /** @return the report to send, or null when the attempt must not be reported (it was lost). */
+    private WorkerProtocol.@Nullable ReportRequest execute(Running attempt) {
+        var assignment = attempt.assignment;
+        Map<String, Object> result = null;
+        RuntimeException failure = null;
+        boolean interrupted = false;
+        // Stopped before it even started (cancelled or lost while queued): skip straight to the outcome.
+        if (attempt.stop.get() == null) {
+            try {
+                result = workload(assignment.workloadType())
+                        .execute(new Payload(assignment.payload()), assignment.attemptNo());
+            } catch (InterruptedException e) {
+                interrupted = true;
+            } catch (RuntimeException e) {
+                failure = e;
+            }
+        }
+        var stoppedBy = attempt.stop.compareAndExchange(null, Stop.COMPLETED);
+        if (stoppedBy == null) {
+            return completed(assignment, result, failure, interrupted);
+        }
+        log.atInfo()
+                .addKeyValue("attemptId", assignment.attemptId())
+                .addKeyValue("jobId", assignment.jobId())
+                .addKeyValue("stop", stoppedBy)
+                .log("Attempt stopped");
+        return switch (stoppedBy) {
+            case LOST -> null;
+            case CANCELLED -> new WorkerProtocol.ReportRequest(AttemptOutcome.CANCELLED, null, "cancelled", null);
+            case TIMED_OUT ->
+                failed(FailureClass.TIMEOUT, "exceeded the attempt timeout of " + assignment.timeoutSeconds() + " s");
+            case SHUTDOWN -> failed(FailureClass.TRANSIENT, "worker shut down before the attempt finished");
+            case COMPLETED -> throw new IllegalStateException("COMPLETED is only set by this method");
+        };
+    }
+
+    private static WorkerProtocol.ReportRequest completed(
+            WorkerProtocol.Assignment assignment,
+            @Nullable Map<String, Object> result,
+            @Nullable RuntimeException failure,
+            boolean interrupted) {
+        if (failure instanceof WorkloadFailure classified) {
+            return failed(classified.failureClass(), classified.getMessage());
+        }
+        if (failure != null) {
+            log.atWarn()
+                    .addKeyValue("attemptId", assignment.attemptId())
+                    .setCause(failure)
+                    .log("Workload failed unexpectedly");
+            return failed(FailureClass.INTERNAL, failure.getClass().getSimpleName() + ": " + failure.getMessage());
+        }
+        if (interrupted) {
+            // Nobody asked it to stop, yet it was interrupted: say so rather than invent a success.
+            return failed(FailureClass.INTERNAL, "interrupted without a stop request");
+        }
+        return new WorkerProtocol.ReportRequest(AttemptOutcome.SUCCEEDED, null, null, result);
+    }
+
+    private Workload workload(String type) {
+        var workload = workloads.get(type);
+        if (workload == null) {
+            // A control plane newer than this worker: retrying on the same build cannot help.
+            throw new WorkloadFailure(FailureClass.NON_RETRYABLE, "this worker cannot execute '" + type + "'");
+        }
+        return workload;
+    }
+
+    private static WorkerProtocol.ReportRequest failed(FailureClass failureClass, @Nullable String message) {
+        var bounded = message == null || message.length() <= 1000 ? message : message.substring(0, 1000);
+        return new WorkerProtocol.ReportRequest(AttemptOutcome.FAILED, failureClass, bounded, null);
+    }
+
+    /**
+     * Sends the report with bounded retries on network and server errors. A rejection (404/409) is final: the attempt
+     * was recovered or this registration retired, and the control plane already decided what happens to the job.
+     */
+    private void send(Running attempt, WorkerProtocol.ReportRequest report) {
+        var attemptId = attempt.assignment.attemptId();
+        var backoff = new Backoff(reportPolicy.baseDelay(), reportPolicy.maxDelay());
+        for (int tryNo = 1; tryNo <= reportPolicy.attempts(); tryNo++) {
+            if (attempt.stop.get() == Stop.LOST) {
+                return;
+            }
+            try {
+                var response = controlPlane.report(attempt.credential, attemptId, report);
+                log.atInfo()
+                        .addKeyValue("attemptId", attemptId)
+                        .addKeyValue("jobId", attempt.assignment.jobId())
+                        .addKeyValue("outcome", report.outcome())
+                        .addKeyValue("jobStatus", response == null ? null : response.jobStatus())
+                        .log("Attempt reported");
+                return;
+            } catch (ControlPlaneClient.ReportRejectedException e) {
+                log.atInfo()
+                        .addKeyValue("attemptId", attemptId)
+                        .addKeyValue("reason", e.getMessage())
+                        .log("Report rejected; the attempt was already resolved by the control plane");
+                return;
+            } catch (HttpClientErrorException e) {
+                log.atError()
+                        .addKeyValue("attemptId", attemptId)
+                        .addKeyValue("status", e.getStatusCode().value())
+                        .log("Report refused as invalid; not retrying");
+                return;
+            } catch (RestClientException e) {
+                if (tryNo == reportPolicy.attempts()) {
+                    log.atWarn()
+                            .addKeyValue("attemptId", attemptId)
+                            .addKeyValue("error", e.getMessage())
+                            .log("Giving up on the report; the lease will expire and the attempt will be recovered");
+                    return;
+                }
+                try {
+                    Thread.sleep(backoff.delayForFailure(tryNo, random));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    private void stop(Running attempt, Stop reason) {
+        if (attempt.stop.compareAndSet(null, reason)) {
+            interrupt(attempt);
+        }
+    }
+
+    private static void interrupt(Running attempt) {
+        var thread = attempt.thread;
+        if (thread != null) {
+            thread.interrupt();
+        }
+    }
+}

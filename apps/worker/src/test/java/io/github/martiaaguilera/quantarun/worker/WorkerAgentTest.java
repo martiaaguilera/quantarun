@@ -10,6 +10,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
+import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
@@ -45,10 +46,19 @@ class WorkerAgentTest {
                 new WorkerSettings.Capacity(8000, 16384, 2, 4),
                 Duration.ofSeconds(1),
                 Duration.ofSeconds(1),
-                Duration.ofSeconds(30));
+                Duration.ofSeconds(30),
+                Duration.ofMillis(500),
+                Duration.ofSeconds(5),
+                3);
+        var client = new ControlPlaneClient(builder.build(), BOOTSTRAP);
         // A fixed seed makes the jittered backoff reproducible in assertions.
         agent = new WorkerAgent(
-                new ControlPlaneClient(builder.build(), BOOTSTRAP),
+                client,
+                new AttemptExecutor(
+                        client,
+                        4,
+                        new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
+                        RandomGenerator.of("L64X128MixRandom")),
                 settings,
                 "test",
                 RandomGenerator.of("L64X128MixRandom"));
