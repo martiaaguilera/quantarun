@@ -49,7 +49,8 @@ class WorkerAgentTest {
                 Duration.ofSeconds(30),
                 Duration.ofMillis(500),
                 Duration.ofSeconds(5),
-                3);
+                3,
+                List.of());
         var client = new ControlPlaneClient(builder.build(), BOOTSTRAP);
         // A fixed seed makes the jittered backoff reproducible in assertions.
         agent = new WorkerAgent(
@@ -58,6 +59,7 @@ class WorkerAgentTest {
                         client,
                         4,
                         new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
+                        new AttemptExecutor.HttpSettings(List.of(), Duration.ofSeconds(1)),
                         RandomGenerator.of("L64X128MixRandom")),
                 settings,
                 "test",

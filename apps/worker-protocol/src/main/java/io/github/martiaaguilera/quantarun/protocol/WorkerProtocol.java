@@ -76,6 +76,8 @@ public final class WorkerProtocol {
      * reports an outcome or its lease expires.
      *
      * @param attemptId the fencing token for every later call about this execution.
+     * @param lastCheckpoint the job's last committed stage, for a staged workload to resume after; null when there is
+     *     none (the attempt starts from zero).
      */
     public record Assignment(
             UUID attemptId,
@@ -83,7 +85,18 @@ public final class WorkerProtocol {
             int attemptNo,
             String workloadType,
             Map<String, Object> payload,
-            int timeoutSeconds) {}
+            int timeoutSeconds,
+            Checkpoint lastCheckpoint) {}
+
+    /** A committed stage result. Stages are numbered from 0 and committed strictly in order. */
+    public record Checkpoint(int stageIndex, Map<String, Object> result) {}
+
+    /** @param result the stage's output, at most 8 KiB as JSON; handed to the attempt that resumes after it. */
+    public record CheckpointRequest(
+            @NotNull @Min(0) @Max(99) Integer stageIndex,
+            @NotNull Map<String, Object> result) {}
+
+    public record CheckpointResponse(int stageIndex, boolean alreadyCommitted) {}
 
     public record ClaimResponse(List<Assignment> assignments) {}
 
@@ -113,12 +126,15 @@ public final class WorkerProtocol {
     /**
      * @param failureClass required when {@code outcome} is FAILED, absent otherwise.
      * @param result workload output on success; size-capped by the control plane.
+     * @param retryAfterMillis for RATE_LIMITED only: how long the provider asked to wait (its Retry-After). The retry
+     *     waits at least this long, capped by the control plane.
      */
     public record ReportRequest(
             @NotNull AttemptOutcome outcome,
             FailureClass failureClass,
             @Size(max = 1000) String message,
-            Map<String, Object> result) {}
+            Map<String, Object> result,
+            @Min(0) @Max(3_600_000) Long retryAfterMillis) {}
 
     /** @param jobStatus the job's status after this report was applied (or after the identical earlier report). */
     public record ReportResponse(UUID attemptId, String attemptStatus, String jobStatus) {}

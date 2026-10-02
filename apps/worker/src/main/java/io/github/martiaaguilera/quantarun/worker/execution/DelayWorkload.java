@@ -13,7 +13,7 @@ final class DelayWorkload implements Workload {
     }
 
     @Override
-    public Map<String, Object> execute(Payload payload, int attemptNo) throws InterruptedException {
+    public Map<String, Object> execute(Payload payload, AttemptContext context) throws InterruptedException {
         var duration = payload.requireLong("durationMs", 0, MAX_DURATION_MS);
         Thread.sleep(duration);
         return Map.of("sleptMs", duration);

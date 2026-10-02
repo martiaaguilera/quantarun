@@ -17,7 +17,7 @@ class RetryPolicyTest {
     @Test
     void cancelRequest_winsOverEverything() {
         for (var failureClass : FailureClass.values()) {
-            assertThat(policy.decide(failureClass, 1, 3, true, new SplittableRandom(1)))
+            assertThat(policy.decide(failureClass, 1, 3, true, null, new SplittableRandom(1)))
                     .isEqualTo(new RetryPolicy.Decision.GiveUp(
                             JobStatus.CANCELLED, "cancel requested while the attempt was active"));
         }
@@ -28,7 +28,7 @@ class RetryPolicyTest {
             value = FailureClass.class,
             names = {"INVALID_INPUT", "NON_RETRYABLE"})
     void nonRetryableClasses_failImmediately_evenWithBudgetLeft(FailureClass failureClass) {
-        var decision = policy.decide(failureClass, 1, 10, false, new SplittableRandom(1));
+        var decision = policy.decide(failureClass, 1, 10, false, null, new SplittableRandom(1));
 
         assertThat(decision)
                 .isInstanceOfSatisfying(
@@ -44,8 +44,8 @@ class RetryPolicyTest {
     void retryableClasses_retryWhileBudgetRemains_thenGoDead(FailureClass failureClass) {
         for (int maxAttempts = 1; maxAttempts <= 10; maxAttempts++) {
             for (int attemptNo = 1; attemptNo <= maxAttempts; attemptNo++) {
-                var decision =
-                        policy.decide(failureClass, attemptNo, maxAttempts, false, new SplittableRandom(attemptNo));
+                var decision = policy.decide(
+                        failureClass, attemptNo, maxAttempts, false, null, new SplittableRandom(attemptNo));
                 if (attemptNo < maxAttempts) {
                     assertThat(decision).isInstanceOf(RetryPolicy.Decision.Retry.class);
                 } else {
@@ -62,7 +62,7 @@ class RetryPolicyTest {
 
     @Test
     void workerLost_retriesWithoutDelay() {
-        assertThat(policy.decide(FailureClass.WORKER_LOST, 2, 3, false, new SplittableRandom(7)))
+        assertThat(policy.decide(FailureClass.WORKER_LOST, 2, 3, false, null, new SplittableRandom(7)))
                 .isEqualTo(new RetryPolicy.Decision.Retry(Duration.ZERO));
     }
 
@@ -90,5 +90,31 @@ class RetryPolicyTest {
 
         assertThat(first).isEqualTo(again);
         assertThat(distinct).hasSizeGreaterThan(40);
+    }
+
+    @Test
+    void rateLimited_waitsForTheProvidersRetryAfter_whenLongerThanTheBackoff() {
+        var decision =
+                policy.decide(FailureClass.RATE_LIMITED, 1, 3, false, Duration.ofSeconds(30), new SplittableRandom(3));
+
+        assertThat(decision).isEqualTo(new RetryPolicy.Decision.Retry(Duration.ofSeconds(30)));
+    }
+
+    @Test
+    void rateLimited_keepsTheBackoff_whenItIsLongerThanRetryAfter() {
+        var random = new SplittableRandom(5);
+        var backoff = policy.fullJitterBackoff(7, new SplittableRandom(5));
+        var decision = policy.decide(FailureClass.RATE_LIMITED, 7, 10, false, Duration.ZERO, random);
+
+        assertThat(decision).isEqualTo(new RetryPolicy.Decision.Retry(backoff));
+    }
+
+    @Test
+    void retryAfter_isCapped_andIgnoredForOtherClasses() {
+        assertThat(policy.decide(FailureClass.RATE_LIMITED, 1, 3, false, Duration.ofDays(1), new SplittableRandom(1)))
+                .isEqualTo(new RetryPolicy.Decision.Retry(RetryPolicy.MAX_RETRY_AFTER));
+        var transientDecision =
+                policy.decide(FailureClass.TRANSIENT, 1, 3, false, Duration.ofDays(1), new SplittableRandom(1));
+        assertThat(((RetryPolicy.Decision.Retry) transientDecision).delay()).isLessThanOrEqualTo(Duration.ofSeconds(1));
     }
 }

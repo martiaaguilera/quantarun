@@ -6,7 +6,13 @@ import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.node.ObjectNode;
 
-/** Read model of one logical job, exactly as stored. */
+/**
+ * Read model of one logical job, exactly as stored.
+ *
+ * @param attemptCount every attempt the job ever had; it numbers them, so it keeps growing across revives.
+ * @param budgetStart {@code attemptCount} when the current attempt budget was granted (0, or the value at the last
+ *     revive). The budget left is {@code maxAttempts - (attemptCount - budgetStart)}.
+ */
 public record Job(
         UUID id,
         UUID projectId,
@@ -18,6 +24,8 @@ public record Job(
         List<String> requiredLabels,
         int maxAttempts,
         int attemptCount,
+        int budgetStart,
+        int reviveCount,
         int timeoutSeconds,
         Instant availableAt,
         @Nullable Instant deadlineAt,
@@ -27,4 +35,10 @@ public record Job(
         @Nullable String schedulingReason,
         Instant createdAt,
         Instant updatedAt,
-        @Nullable Instant finishedAt) {}
+        @Nullable Instant finishedAt) {
+
+    /** Attempts used from the current budget (invariant I9 is stated over this number). */
+    public int attemptsInBudget() {
+        return attemptCount - budgetStart;
+    }
+}

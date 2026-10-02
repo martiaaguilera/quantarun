@@ -87,6 +87,39 @@ public class JobLifecycle {
         return new SubmissionResult.Replayed(existing.job());
     }
 
+    /** Matches the {@code jobs_revive_count_range} CHECK: a job that keeps dying needs a look, not a loop. */
+    public static final int MAX_REVIVES = 10;
+
+    /**
+     * Invariant I13: a DEAD job runs again only through this explicit call. It gets a fresh attempt budget; its earlier
+     * attempts and checkpoints stay, so a staged workload resumes after its last committed stage.
+     */
+    @Transactional
+    public Job revive(UUID jobId) {
+        var revived = jobs.revive(jobId, MAX_REVIVES);
+        if (revived.isPresent()) {
+            var job = revived.get();
+            events.append(
+                    jobId,
+                    null,
+                    JobEventType.REVIVED,
+                    Map.of("reviveCount", job.reviveCount(), "attemptBudget", job.maxAttempts()));
+            log.atInfo().addKeyValue("jobId", jobId).log("Job revived");
+            return job;
+        }
+        var current = jobs.findById(jobId).orElseThrow(() -> new JobNotFoundException(jobId));
+        if (current.status() == JobStatus.DEAD) {
+            throw new ApiException(
+                    HttpStatus.CONFLICT,
+                    "REVIVE_LIMIT_REACHED",
+                    "Job " + jobId + " was already revived " + MAX_REVIVES + " times.");
+        }
+        throw new ApiException(
+                HttpStatus.CONFLICT,
+                "JOB_NOT_DEAD",
+                "Only a DEAD job can be revived; job " + jobId + " is " + current.status() + ".");
+    }
+
     /**
      * Invariant I12: a cancelled job is never placed afterwards. Waiting jobs are cancelled with a conditional update;
      * jobs holding an attempt are flagged, and the attempt's end moves them to CANCELLED. The job can change state

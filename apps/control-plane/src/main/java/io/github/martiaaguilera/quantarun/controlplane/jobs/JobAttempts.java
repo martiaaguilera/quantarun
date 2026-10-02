@@ -2,12 +2,14 @@ package io.github.martiaaguilera.quantarun.controlplane.jobs;
 
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.AttemptRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.AttemptRepository.LockedAttempt;
+import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.CheckpointRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobEventRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobRepository;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerCapacity;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerProperties;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.AttemptOutcome;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -36,13 +38,22 @@ public class JobAttempts {
     private static final Logger log = LoggerFactory.getLogger(JobAttempts.class);
     public static final int MAX_RESULT_BYTES = 16 * 1024;
 
+    public static final int MAX_CHECKPOINT_BYTES = 8 * 1024;
+
+    /**
+     * @param lastCheckpoint the job's last committed stage, so a staged workload resumes after it instead of starting
+     *     from zero; null when nothing was committed yet.
+     */
     public record Claimed(
             UUID attemptId,
             UUID jobId,
             int attemptNo,
             String workloadType,
             Map<String, Object> payload,
-            int timeoutSeconds) {}
+            int timeoutSeconds,
+            @Nullable CommittedStage lastCheckpoint) {}
+
+    public record CommittedStage(int stageIndex, Map<String, Object> result) {}
 
     public record Renewal(List<UUID> renewedRunning, List<UUID> cancelRequested, List<UUID> lost) {}
 
@@ -58,9 +69,29 @@ public class JobAttempts {
         record Rejected(UUID attemptId, AttemptStatus attemptStatus) implements ReportResult {}
 
         record NotFound(UUID attemptId) implements ReportResult {}
+
+        /** The attempt is assigned but was never claimed, so there is no execution to report on. */
+        record NotClaimed(UUID attemptId) implements ReportResult {}
+    }
+
+    /** Result of committing a checkpoint (invariant I14). */
+    public sealed interface CheckpointResult {
+        record Committed(int stageIndex) implements CheckpointResult {}
+
+        /** The same stage with the same result was already committed by this attempt: a retried delivery. */
+        record AlreadyCommitted(int stageIndex) implements CheckpointResult {}
+
+        /** Stages commit in order, without gaps, and are never rewritten. */
+        record OutOfOrder(int expectedStage) implements CheckpointResult {}
+
+        /** Only a RUNNING attempt can commit; a stale or recovered one is fenced out. */
+        record NotActive(AttemptStatus attemptStatus) implements CheckpointResult {}
+
+        record NotFound(UUID attemptId) implements CheckpointResult {}
     }
 
     private final AttemptRepository attempts;
+    private final CheckpointRepository checkpoints;
     private final JobRepository jobs;
     private final JobEventRepository events;
     private final WorkerCapacity capacity;
@@ -71,6 +102,7 @@ public class JobAttempts {
 
     JobAttempts(
             AttemptRepository attempts,
+            CheckpointRepository checkpoints,
             JobRepository jobs,
             JobEventRepository events,
             WorkerCapacity capacity,
@@ -78,6 +110,7 @@ public class JobAttempts {
             RetryPolicy retryPolicy,
             JsonMapper json) {
         this.attempts = attempts;
+        this.checkpoints = checkpoints;
         this.jobs = jobs;
         this.events = events;
         this.capacity = capacity;
@@ -95,16 +128,26 @@ public class JobAttempts {
             var job = jobs.transition(attempt.jobId(), List.of(JobStatus.SCHEDULED), JobStatus.RUNNING)
                     .orElseThrow(() -> new IllegalStateException(
                             "Job " + attempt.jobId() + " of an assigned attempt is not SCHEDULED"));
-            events.append(job.id(), attempt.id(), JobEventType.STARTED, Map.of("workerId", workerId.toString()));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> payload = json.convertValue(attempt.payload(), Map.class);
+            var lastCheckpoint = checkpoints
+                    .findLast(job.id())
+                    .map(checkpoint -> new CommittedStage(checkpoint.stageIndex(), toMap(checkpoint.result())))
+                    .orElse(null);
+            var details = new LinkedHashMap<String, Object>();
+            details.put("workerId", workerId.toString());
+            if (job.workloadType().isCheckpointable()) {
+                // The timeline must show whether a retry redid finished work or picked up where the last one stopped.
+                details.put(
+                        "resume", lastCheckpoint == null ? "from zero" : "after stage " + lastCheckpoint.stageIndex());
+            }
+            events.append(job.id(), attempt.id(), JobEventType.STARTED, details);
             result.add(new Claimed(
                     attempt.id(),
                     attempt.jobId(),
                     attempt.attemptNo(),
                     attempt.workloadType(),
-                    payload,
-                    attempt.timeoutSeconds()));
+                    toMap(attempt.payload()),
+                    attempt.timeoutSeconds(),
+                    lastCheckpoint));
         }
         return result;
     }
@@ -134,7 +177,8 @@ public class JobAttempts {
             AttemptOutcome outcome,
             @Nullable FailureClass failureClass,
             @Nullable String message,
-            @Nullable Map<String, Object> result) {
+            @Nullable Map<String, Object> result,
+            @Nullable Duration retryAfter) {
         var locked = attempts.lock(attemptId).filter(a -> a.workerId().equals(workerId));
         if (locked.isEmpty()) {
             return new ReportResult.NotFound(attemptId);
@@ -145,6 +189,9 @@ public class JobAttempts {
             case FAILED -> AttemptStatus.FAILED;
             case CANCELLED -> AttemptStatus.CANCELLED;
         };
+        if (attempt.status() == AttemptStatus.ASSIGNED) {
+            return new ReportResult.NotClaimed(attemptId);
+        }
         if (!attempt.status().isActive()) {
             var jobStatus = jobs.findById(attempt.jobId()).orElseThrow().status();
             // Delivery is at-least-once: a retried report of the outcome already recorded is answered, not refused.
@@ -155,8 +202,49 @@ public class JobAttempts {
         var serializedResult = result == null || result.isEmpty() ? null : json.writeValueAsString(result);
         var effectiveFailure =
                 outcome == AttemptOutcome.FAILED && failureClass == null ? FailureClass.INTERNAL : failureClass;
-        var jobStatus = endAttempt(attempt, reportedStatus, effectiveFailure, message, serializedResult);
+        var jobStatus = endAttempt(attempt, reportedStatus, effectiveFailure, message, serializedResult, retryAfter);
         return new ReportResult.Applied(attemptId, reportedStatus, jobStatus);
+    }
+
+    /**
+     * Commits one stage of a staged workload. Fenced like a report: only the RUNNING attempt of the worker that owns it
+     * can commit (invariant I14), and the attempt's row lock serialises this against the reaper, so a checkpoint and the
+     * attempt's recovery can never both win. Stages commit strictly in order: the next stage is the last one plus one.
+     */
+    @Transactional
+    public CheckpointResult commitCheckpoint(
+            UUID workerId, UUID attemptId, int stageIndex, Map<String, Object> result) {
+        var locked = attempts.lock(attemptId).filter(a -> a.workerId().equals(workerId));
+        if (locked.isEmpty()) {
+            return new CheckpointResult.NotFound(attemptId);
+        }
+        var attempt = locked.get();
+        var canonical = json.readTree(json.writeValueAsString(result));
+        var existing = checkpoints.find(attempt.jobId(), stageIndex);
+        if (existing.isPresent()) {
+            var same = existing.get().attemptId().equals(attemptId)
+                    && existing.get().result().equals(canonical);
+            if (same) {
+                return new CheckpointResult.AlreadyCommitted(stageIndex);
+            }
+        }
+        if (attempt.status() != AttemptStatus.RUNNING) {
+            return new CheckpointResult.NotActive(attempt.status());
+        }
+        var expected = checkpoints
+                .findLast(attempt.jobId())
+                .map(last -> last.stageIndex() + 1)
+                .orElse(0);
+        if (stageIndex != expected) {
+            return new CheckpointResult.OutOfOrder(expected);
+        }
+        checkpoints.insert(attempt.jobId(), stageIndex, attemptId, json.writeValueAsString(canonical));
+        events.append(
+                attempt.jobId(),
+                attemptId,
+                JobEventType.CHECKPOINT_COMMITTED,
+                Map.of("stageIndex", stageIndex, "attemptNo", attempt.attemptNo()));
+        return new CheckpointResult.Committed(stageIndex);
     }
 
     /**
@@ -169,7 +257,7 @@ public class JobAttempts {
     public int recoverExpiredLeases(int limit) {
         var expired = attempts.lockExpired(limit);
         for (var attempt : expired) {
-            endAttempt(attempt, AttemptStatus.LOST, FailureClass.WORKER_LOST, "lease expired", null);
+            endAttempt(attempt, AttemptStatus.LOST, FailureClass.WORKER_LOST, "lease expired", null, null);
             log.atWarn()
                     .addKeyValue("attemptId", attempt.id())
                     .addKeyValue("jobId", attempt.jobId())
@@ -190,7 +278,8 @@ public class JobAttempts {
             AttemptStatus endStatus,
             @Nullable FailureClass failureClass,
             @Nullable String message,
-            @Nullable String result) {
+            @Nullable String result,
+            @Nullable Duration retryAfter) {
         if (!attempt.status().canTransitionTo(endStatus)) {
             throw new IllegalStateException(
                     "Illegal attempt transition " + attempt.status() + " -> " + endStatus + " for " + attempt.id());
@@ -211,9 +300,11 @@ public class JobAttempts {
         } else {
             decision = retryPolicy.decide(
                     failureClass == null ? FailureClass.INTERNAL : failureClass,
-                    attempt.attemptNo(),
+                    // The budget restarts at a revive; numbering does not (invariant I9).
+                    attempt.attemptNo() - job.budgetStart(),
                     job.maxAttempts(),
                     cancelRequested,
+                    retryAfter,
                     random);
             nextJobStatus = decision instanceof RetryPolicy.Decision.GiveUp(var terminal, var reason)
                     ? terminal
@@ -272,6 +363,11 @@ public class JobAttempts {
             }
             default -> throw new IllegalStateException("Attempt cannot end as " + endStatus);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> toMap(tools.jackson.databind.JsonNode node) {
+        return json.convertValue(node, Map.class);
     }
 
     private static @Nullable String truncate(@Nullable String message) {

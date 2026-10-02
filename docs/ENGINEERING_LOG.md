@@ -2,6 +2,32 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-02 — SSRF guard: filter inside the resolver, and the test that checks it
+The http workload needed a guard that DNS rebinding cannot bypass. Resolving the host, checking the addresses and then
+connecting (letting the client resolve again) leaves a window in which a hostile DNS server can answer with a public
+address for the check and `127.0.0.1` for the connect. Spring Boot 4.1's `InetAddressFilter` can sit at different
+points depending on the client. On the JDK client it is a `ProxySelector` that checks before the client resolves again,
+which leaves the same window. On Apache HttpClient 5 it wraps the `DnsResolver`, so the filtered addresses are exactly
+the ones connected to. Hence the new `httpclient5` dependency on the worker. One side effect: `detect()` now picks
+HttpComponents for the control-plane client too. That is harmless (same timeouts, no filter there), and the end-to-end
+runs used it. `HttpWorkloadTest.hostnameResolvingToLoopback_isBlockedAtConnectTime` checks the resolver path itself,
+with no lookup of our own in front of it. An open question was whether HttpClient skips the resolver for IP literals.
+Experiment: with the explicit literal check disabled, all 22 cases still passed, so 5.6 filters literals as well. The
+explicit check stays as defence in depth, documented as such.
+
+## 2026-10-02 — A test assumed the reaper waits; it skips
+The first version of `checkpointRacingLeaseRecovery_isNeverCommittedByARecoveredAttempt` asserted that the attempt was
+LOST after the race and failed: it was still RUNNING. The reaper locks expired leases with SKIP LOCKED, so when the
+checkpoint held the attempt's row lock it skipped the attempt, as designed, and the next tick recovered it. The test
+now runs that next tick before asserting. The invariant it checks (no checkpoint is ever committed by an attempt that
+was already recovered) is unchanged and was never violated.
+
+## 2026-10-02 — Revive and the budget CHECK
+`CHECK (attempt_count <= max_attempts)` made revive impossible without forgetting history: `attempt_count` numbers the
+attempts, so it must keep growing. V6 adds `budget_start` (set to `attempt_count` at a revive) and restates the guard
+per budget, `attempt_count - budget_start <= max_attempts`. The retry policy counts attempts within the budget in the
+same way. Revives are capped at 10 per job (a CHECK as well), so `attempt_count` stays bounded.
+
 ## 2026-10-02 — Two deadlocks the lease race tests found
 Both appeared as `ERROR: deadlock detected` in the new race tests on real PostgreSQL 18. Neither had shown up in any
 single-threaded test.

@@ -28,7 +28,7 @@ final class MockInferenceWorkload implements Workload {
     }
 
     @Override
-    public Map<String, Object> execute(Payload payload, int attemptNo) throws InterruptedException {
+    public Map<String, Object> execute(Payload payload, AttemptContext context) throws InterruptedException {
         var inputTokens = payload.requireLong("inputTokens", 1, MAX_INPUT_TOKENS);
         var outputTokens = payload.requireLong("outputTokens", 1, MAX_OUTPUT_TOKENS);
         var latencyMs = payload.requireLong("latencyMs", 0, MAX_LATENCY_MS);

@@ -13,6 +13,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.random.RandomGenerator;
@@ -46,6 +47,7 @@ class AttemptExecutorTest {
                 new ControlPlaneClient(builder.build(), "bootstrap-token-0123456789-0123456789"),
                 2,
                 new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
+                new AttemptExecutor.HttpSettings(List.of(), Duration.ofSeconds(1)),
                 RandomGenerator.of("L64X128MixRandom"));
     }
 
@@ -205,6 +207,75 @@ class AttemptExecutorTest {
         executor.abandonAll();
     }
 
+    @Test
+    void stagedAttempt_commitsEachStageThenReports() throws Exception {
+        var attempt = assignment(
+                "staged", Map.of("stages", java.util.List.of(Map.of("durationMs", 0), Map.of("durationMs", 0))), 30);
+        for (int stage = 0; stage < 2; stage++) {
+            server.expect(once(), requestTo(checkpointUrl(attempt)))
+                    .andExpect(jsonPath("$.stageIndex").value(stage))
+                    .andExpect(jsonPath("$.result.digest", Matchers.notNullValue()))
+                    .andRespond(withSuccess(
+                            "{\"stageIndex\":" + stage + ",\"alreadyCommitted\":false}", MediaType.APPLICATION_JSON));
+        }
+        expectReport(attempt)
+                .andExpect(jsonPath("$.outcome").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.result.executedStages").value(2))
+                .andRespond(accepted(attempt, "SUCCEEDED"));
+
+        executor.start(attempt, SECRET);
+
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        server.verify();
+    }
+
+    @Test
+    void rejectedCheckpoint_stopsTheAttemptSilently() throws Exception {
+        var attempt = assignment(
+                "staged", Map.of("stages", java.util.List.of(Map.of("durationMs", 0), Map.of("durationMs", 0))), 30);
+        server.expect(once(), requestTo(checkpointUrl(attempt)))
+                .andRespond(withStatus(HttpStatus.CONFLICT)
+                        .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                        .body("{\"code\":\"ATTEMPT_NOT_ACTIVE\"}"));
+
+        executor.start(attempt, SECRET);
+
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        // No second checkpoint and no report: the attempt was recovered, so this worker stays silent.
+        server.verify();
+    }
+
+    @Test
+    void rateLimitedFailure_carriesTheProvidersRetryAfter() throws Exception {
+        var attempt = assignment("fail", Map.of("failureClass", "RATE_LIMITED", "retryAfterMillis", 15_000), 30);
+        expectReport(attempt)
+                .andExpect(jsonPath("$.failureClass").value("RATE_LIMITED"))
+                .andExpect(jsonPath("$.retryAfterMillis").value(15_000))
+                .andRespond(accepted(attempt, "RETRY_WAIT"));
+
+        executor.start(attempt, SECRET);
+
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        server.verify();
+    }
+
+    @Test
+    void retryAfter_isOnlySentForRateLimiting() throws Exception {
+        var attempt = assignment("fail", Map.of("failureClass", "TRANSIENT", "retryAfterMillis", 15_000), 30);
+        expectReport(attempt)
+                .andExpect(jsonPath("$.retryAfterMillis").doesNotExist())
+                .andRespond(accepted(attempt, "RETRY_WAIT"));
+
+        executor.start(attempt, SECRET);
+
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        server.verify();
+    }
+
+    private static String checkpointUrl(WorkerProtocol.Assignment attempt) {
+        return BASE + "/worker-api/v1/attempts/" + attempt.attemptId() + "/checkpoints";
+    }
+
     private org.springframework.test.web.client.ResponseActions expectReport(WorkerProtocol.Assignment attempt) {
         return server.expect(once(), requestTo(reportUrl(attempt)))
                 .andExpect(jsonPath("$.outcome", Matchers.notNullValue()));
@@ -223,6 +294,7 @@ class AttemptExecutorTest {
     }
 
     private static WorkerProtocol.Assignment assignment(String type, Map<String, Object> payload, int timeoutSeconds) {
-        return new WorkerProtocol.Assignment(UUID.randomUUID(), UUID.randomUUID(), 1, type, payload, timeoutSeconds);
+        return new WorkerProtocol.Assignment(
+                UUID.randomUUID(), UUID.randomUUID(), 1, type, payload, timeoutSeconds, null);
     }
 }

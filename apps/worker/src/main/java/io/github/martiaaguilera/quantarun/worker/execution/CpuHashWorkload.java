@@ -22,7 +22,7 @@ final class CpuHashWorkload implements Workload {
     }
 
     @Override
-    public Map<String, Object> execute(Payload payload, int attemptNo) throws InterruptedException {
+    public Map<String, Object> execute(Payload payload, AttemptContext context) throws InterruptedException {
         var iterations = payload.requireLong("iterations", 1, MAX_ITERATIONS);
         var seed = payload.optionalString("seed", 256).orElse("quantarun");
         var sha256 = sha256();

@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Drives the real code paths a running system uses: workers register through {@link WorkerRegistry}, jobs are
@@ -61,16 +62,12 @@ public final class ExecutionFixture {
     }
 
     public UUID submit(int maxAttempts) {
+        return submit(WorkloadType.DELAY, json.createObjectNode().put("durationMs", 10), maxAttempts);
+    }
+
+    public UUID submit(WorkloadType type, ObjectNode payload, int maxAttempts) {
         var submission = new JobSubmission(
-                WorkloadType.DELAY,
-                json.createObjectNode().put("durationMs", 10),
-                4,
-                new ResourceRequest(500, 256, 0),
-                List.of(),
-                maxAttempts,
-                60,
-                null,
-                null);
+                type, payload, 4, new ResourceRequest(500, 256, 0), List.of(), maxAttempts, 60, null, null);
         return lifecycle.submit(project, submission, null).job().id();
     }
 

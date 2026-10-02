@@ -26,7 +26,7 @@ public class JobRepository {
 
     private static final String COLUMNS = """
             id, project_id, workload_type, payload, status, priority, cpu_millis, memory_mib, accelerators,
-            required_labels, max_attempts, attempt_count, timeout_seconds, available_at, deadline_at,
+            required_labels, max_attempts, attempt_count, budget_start, revive_count, timeout_seconds, available_at, deadline_at,
             idempotency_key, cancel_requested_at, scheduling_outcome, scheduling_reason, created_at, updated_at,
             finished_at
             """;
@@ -205,6 +205,26 @@ public class JobRepository {
     }
 
     /**
+     * DEAD to QUEUED with a fresh attempt budget, measured from the attempts already made (invariants I9, I13). One
+     * statement, conditional on DEAD and on the revive cap, so of several concurrent revives exactly one matches.
+     */
+    public Optional<Job> revive(UUID id, int maxRevives) {
+        JobStatus.DEAD.requireTransitionTo(JobStatus.QUEUED);
+        return jdbc.sql("""
+                        UPDATE jobs
+                        SET status = 'QUEUED', budget_start = attempt_count, revive_count = revive_count + 1,
+                            available_at = now(), finished_at = NULL, scheduling_outcome = NULL,
+                            scheduling_reason = NULL, updated_at = now()
+                        WHERE id = :id AND status = 'DEAD' AND revive_count < :maxRevives
+                        RETURNING
+                        """ + COLUMNS)
+                .param("id", id)
+                .param("maxRevives", maxRevives)
+                .query(jobMapper)
+                .optional();
+    }
+
+    /**
      * Marks a job with an active attempt for cooperative cancellation. The worker learns about it on its next
      * heartbeat; the status itself only changes when the attempt ends. Matches only the first request, so exactly
      * one concurrent caller sees a row and records the CANCEL_REQUESTED event.
@@ -232,6 +252,8 @@ public class JobRepository {
                 Arrays.asList((String[]) rs.getArray("required_labels").getArray()),
                 rs.getInt("max_attempts"),
                 rs.getInt("attempt_count"),
+                rs.getInt("budget_start"),
+                rs.getInt("revive_count"),
                 rs.getInt("timeout_seconds"),
                 instant(rs, "available_at"),
                 instant(rs, "deadline_at"),

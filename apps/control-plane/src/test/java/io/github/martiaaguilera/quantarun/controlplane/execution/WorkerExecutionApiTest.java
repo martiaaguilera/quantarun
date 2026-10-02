@@ -88,6 +88,19 @@ class WorkerExecutionApiTest {
     }
 
     @Test
+    void report_onAnAttemptThatWasNeverClaimed_isRefused() throws Exception {
+        var worker = fixture.worker("eager", 1);
+        var job = fixture.submit(3);
+        fixture.place();
+        var attempt = fixture.latestAttempt(job);
+
+        report(worker, attempt, "{\"outcome\":\"SUCCEEDED\"}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ATTEMPT_NOT_CLAIMED"));
+        assertThat(fixture.attemptStatus(attempt)).isEqualTo("ASSIGNED");
+    }
+
+    @Test
     void claim_neverHandsOutAnotherWorkersAssignment() throws Exception {
         var owner = fixture.worker("owner", 1);
         var job = fixture.submit(3);
@@ -207,6 +220,8 @@ class WorkerExecutionApiTest {
         report(worker, attempt, "{\"outcome\":\"SUCCEEDED\",\"failureClass\":\"TIMEOUT\"}")
                 .andExpect(status().isBadRequest());
         report(worker, attempt, "{\"outcome\":\"EXPLODED\"}").andExpect(status().isBadRequest());
+        report(worker, attempt, "{\"outcome\":\"FAILED\",\"failureClass\":\"TRANSIENT\",\"retryAfterMillis\":5}")
+                .andExpect(status().isBadRequest());
 
         assertThat(fixture.attemptStatus(attempt)).isEqualTo("RUNNING");
     }

@@ -57,11 +57,13 @@ class WorkerAgentExecutionTest {
                 Duration.ofSeconds(30),
                 Duration.ofMillis(500),
                 Duration.ofSeconds(5),
-                3);
+                3,
+                List.of());
         executor = new AttemptExecutor(
                 client,
                 2,
                 new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
+                new AttemptExecutor.HttpSettings(List.of(), Duration.ofSeconds(1)),
                 RandomGenerator.of("L64X128MixRandom"));
         agent = new WorkerAgent(client, executor, settings, "test", RandomGenerator.of("L64X128MixRandom"));
     }
