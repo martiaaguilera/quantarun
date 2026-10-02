@@ -26,7 +26,8 @@ public class JobRepository {
     private static final String COLUMNS = """
             id, project_id, workload_type, payload, status, priority, cpu_millis, memory_mib, accelerators,
             required_labels, max_attempts, attempt_count, timeout_seconds, available_at, deadline_at,
-            idempotency_key, cancel_requested_at, unschedulable_reason, created_at, updated_at, finished_at
+            idempotency_key, cancel_requested_at, scheduling_outcome, scheduling_reason, created_at, updated_at,
+            finished_at
             """;
 
     public record ListFilter(
@@ -96,6 +97,19 @@ public class JobRepository {
                 .param("id", id)
                 .query(jobMapper)
                 .optional();
+    }
+
+    /**
+     * Locks runnable jobs for one scheduling cycle. {@code orderBy} comes from a fixed enum, never from input, so
+     * concatenating it is not an injection risk.
+     */
+    public List<Job> lockRunnable(int limit, String orderBy) {
+        return jdbc.sql("SELECT " + COLUMNS + " FROM jobs"
+                        + " WHERE status IN ('QUEUED', 'RETRY_WAIT') AND available_at <= now()"
+                        + " ORDER BY " + orderBy + " LIMIT :limit FOR UPDATE SKIP LOCKED")
+                .param("limit", limit)
+                .query(jobMapper)
+                .list();
     }
 
     /** Keyset pagination on the time-ordered id: stable under concurrent inserts, no OFFSET scans. */
@@ -185,7 +199,8 @@ public class JobRepository {
                 instant(rs, "deadline_at"),
                 rs.getString("idempotency_key"),
                 instant(rs, "cancel_requested_at"),
-                rs.getString("unschedulable_reason"),
+                rs.getString("scheduling_outcome"),
+                rs.getString("scheduling_reason"),
                 instant(rs, "created_at"),
                 instant(rs, "updated_at"),
                 instant(rs, "finished_at"));

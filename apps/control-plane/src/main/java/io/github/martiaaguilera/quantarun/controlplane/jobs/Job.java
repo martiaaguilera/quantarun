@@ -23,7 +23,8 @@ public record Job(
         @Nullable Instant deadlineAt,
         @Nullable String idempotencyKey,
         @Nullable Instant cancelRequestedAt,
-        @Nullable String unschedulableReason,
+        @Nullable String schedulingOutcome,
+        @Nullable String schedulingReason,
         Instant createdAt,
         Instant updatedAt,
         @Nullable Instant finishedAt) {}

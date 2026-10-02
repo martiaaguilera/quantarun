@@ -79,7 +79,8 @@ class JobController {
             @Nullable Instant deadline,
             @Nullable String idempotencyKey,
             @Nullable Instant cancelRequestedAt,
-            @Nullable String unschedulableReason,
+            @Nullable String schedulingOutcome,
+            @Nullable String schedulingReason,
             Instant createdAt,
             Instant updatedAt,
             @Nullable Instant finishedAt) {
@@ -102,7 +103,8 @@ class JobController {
                     job.deadlineAt(),
                     job.idempotencyKey(),
                     job.cancelRequestedAt(),
-                    job.unschedulableReason(),
+                    job.schedulingOutcome(),
+                    job.schedulingReason(),
                     job.createdAt(),
                     job.updatedAt(),
                     job.finishedAt());

@@ -8,7 +8,9 @@ API keys.
 > machine, idempotent submission (proven with 500 concurrent duplicates on real PostgreSQL), cooperative
 > cancellation, project-scoped API keys and OpenAPI. On the fleet side: three heterogeneous workers that register with
 > per-worker credentials, heartbeat, drain and deregister; silent ones are retired, with a grace period after a
-> control-plane restart. Scheduling, leases, retries and simulation are **not implemented yet**. This README only
+> control-plane restart. The scheduler places jobs with four policies (FIFO, priority, least-loaded, bin-packing with
+> accelerator conservation) and records why each worker was chosen or rejected; 16 concurrent schedulers are tested not to
+> overcommit any worker. Workers do not execute assignments yet: leases, execution, retries and simulation come next. This README only
 > describes what exists.
 
 ## What it will be

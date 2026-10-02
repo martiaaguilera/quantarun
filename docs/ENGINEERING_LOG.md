@@ -2,6 +2,29 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-02 — Self-invocation silently disabled @Transactional; MANDATORY caught it
+Every scheduling test passed, but in the compose stack nothing was ever placed. `SchedulingCycle` had a convenience
+overload `runCycle()` that called `this.runCycle(policy)`. A call on `this` bypasses the Spring proxy, so the
+`@Transactional` on the real method never applied. The tests called the transactional overload directly; only the
+background loop used the other one. Two design choices limited the damage. First, the lock-taking methods in
+`JobPlacement` and `WorkerCapacity` use `Propagation.MANDATORY`, so without a transaction they threw at once instead
+of scheduling without locks, which would have allowed real overcommit under concurrency. Second, a structured log made
+the stack trace easy to find. A second bug surfaced at the same time: the loop caught only `DataAccessException`, so
+the unexpected exception killed the scheduler thread for good. Fixes: remove the overload, make the loop survive any
+`RuntimeException` (logged at ERROR with its stack trace), and add `SchedulerLoopTest`, which drives the real
+background loop instead of the cycle. Lesson: test the call path production actually uses, not the convenient one.
+
+## 2026-10-02 — Property tests without jqwik
+The brief suggests jqwik, but jqwik 1.10 is built on JUnit Platform 1.14 while Spring Boot 4 ships JUnit Platform 6.
+Mixing two platform generations in one test runtime is the kind of dependency risk that fails in confusing ways.
+Instead, `PlacementPropertiesTest` generates cases from per-case seeds (`SplittableRandom(seed)`) and reports the seed
+on failure, so every counterexample is reproducible. It loses shrinking, and keeps zero extra dependencies.
+
+## 2026-10-02 — Scheduler window query plans
+`EXPLAIN ANALYZE` with 200,000 finished and 2,000 runnable jobs: the oldest-first window is an index scan on the
+partial `jobs_runnable_idx`, reading 10 buffers in 0.44 ms. The priority window sorts all runnable rows (2.46 ms). The
+partial index keeps finished history out of the hot path entirely. Details in SCHEDULER.md.
+
 ## 2026-10-01 — A control-plane restart looked like the death of every worker
 End-to-end test: restart the control plane while three healthy workers keep running. On startup the liveness monitor
 retired **all** of them, and each had to register again under a new id. The cause: while the control plane is down

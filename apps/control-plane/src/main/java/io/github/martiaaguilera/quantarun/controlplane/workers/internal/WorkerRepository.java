@@ -69,6 +69,33 @@ public class WorkerRepository {
                 .optional();
     }
 
+    /** Locks live workers in id order; every transaction that locks workers uses this order, avoiding deadlocks. */
+    public List<Worker> lockLive() {
+        return jdbc.sql(SELECT_WORKERS + " WHERE w.lifecycle IN ('ACTIVE', 'DRAINING') ORDER BY w.id FOR UPDATE OF w")
+                .query(this::mapWorker)
+                .list();
+    }
+
+    public void addReservation(UUID workerId, int cpuMillis, int memoryMib, int accelerators) {
+        var updated = jdbc.sql("""
+                        UPDATE workers
+                        SET cpu_millis_reserved = cpu_millis_reserved + :cpu,
+                            memory_mib_reserved = memory_mib_reserved + :memory,
+                            accelerators_reserved = accelerators_reserved + :accelerators,
+                            slots_reserved = slots_reserved + 1,
+                            updated_at = now()
+                        WHERE id = :id
+                        """)
+                .param("cpu", cpuMillis)
+                .param("memory", memoryMib)
+                .param("accelerators", accelerators)
+                .param("id", workerId)
+                .update();
+        if (updated != 1) {
+            throw new IllegalStateException("Worker " + workerId + " vanished while locked");
+        }
+    }
+
     public Optional<Worker> findById(UUID id) {
         return jdbc.sql(SELECT_WORKERS + " WHERE w.id = :id")
                 .param("id", id)

@@ -1,0 +1,86 @@
+package io.github.martiaaguilera.quantarun.controlplane.scheduler;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.SmartLifecycle;
+import org.springframework.dao.DataAccessException;
+
+/**
+ * Runs scheduling cycles continuously on a fixed number of threads. A cycle that placed work runs again at once so a
+ * backlog drains quickly; an idle cycle waits {@code idleDelay}, which bounds the polling load on an empty queue.
+ */
+class SchedulerLoop implements SmartLifecycle {
+
+    private static final Logger log = LoggerFactory.getLogger(SchedulerLoop.class);
+    private static final Duration FAILURE_DELAY = Duration.ofSeconds(1);
+
+    private final SchedulingCycle cycle;
+    private final SchedulerProperties properties;
+    private final List<Thread> threads = new ArrayList<>();
+    private volatile boolean running;
+
+    SchedulerLoop(SchedulingCycle cycle, SchedulerProperties properties) {
+        this.cycle = cycle;
+        this.properties = properties;
+    }
+
+    @Override
+    public void start() {
+        running = true;
+        for (int i = 0; i < properties.loops(); i++) {
+            threads.add(Thread.ofPlatform().name("scheduler-" + i).daemon().start(this::loop));
+        }
+        log.atInfo()
+                .addKeyValue("policy", properties.policy())
+                .addKeyValue("loops", properties.loops())
+                .log("Scheduler started");
+    }
+
+    private void loop() {
+        while (running) {
+            Duration pause;
+            try {
+                var result = cycle.runCycle(properties.policy());
+                pause = result.placed() > 0 ? Duration.ZERO : properties.idleDelay();
+            } catch (DataAccessException e) {
+                // A failed cycle rolls back as a whole, leaving no partial placement; the next cycle simply retries.
+                log.atWarn().addKeyValue("error", e.getMessage()).log("Scheduling cycle failed; retrying");
+                pause = FAILURE_DELAY;
+            } catch (RuntimeException e) {
+                // This loop supervises the cycle, so it must outlive any bug in it: a dead scheduler thread fails
+                // silently and stops all placement. The bug is still surfaced at ERROR with its stack trace.
+                log.error("Unexpected failure in scheduling cycle; retrying", e);
+                pause = FAILURE_DELAY;
+            }
+            try {
+                TimeUnit.MILLISECONDS.sleep(pause.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    @Override
+    public void stop() {
+        running = false;
+        threads.forEach(Thread::interrupt);
+        for (var thread : threads) {
+            try {
+                thread.join(Duration.ofSeconds(5));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        threads.clear();
+    }
+
+    @Override
+    public boolean isRunning() {
+        return running;
+    }
+}
