@@ -168,11 +168,10 @@ public class JobAttempts {
     @Transactional
     public int recoverExpiredLeases(int limit) {
         var expired = attempts.lockExpired(limit);
-        for (var attemptId : expired) {
-            var attempt = attempts.lock(attemptId).orElseThrow();
+        for (var attempt : expired) {
             endAttempt(attempt, AttemptStatus.LOST, FailureClass.WORKER_LOST, "lease expired", null);
             log.atWarn()
-                    .addKeyValue("attemptId", attemptId)
+                    .addKeyValue("attemptId", attempt.id())
                     .addKeyValue("jobId", attempt.jobId())
                     .addKeyValue("workerId", attempt.workerId())
                     .log("Lease expired; attempt recovered");
@@ -184,10 +183,6 @@ public class JobAttempts {
     @Transactional
     public int extendActiveLeasesAfterRestart() {
         return attempts.extendActiveLeases(workerProperties.leaseDuration());
-    }
-
-    public List<AttemptRepository.AttemptView> history(UUID jobId) {
-        return attempts.findByJob(jobId);
     }
 
     private JobStatus endAttempt(

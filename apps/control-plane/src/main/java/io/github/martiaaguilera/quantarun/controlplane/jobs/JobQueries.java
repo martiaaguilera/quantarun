@@ -1,5 +1,6 @@
 package io.github.martiaaguilera.quantarun.controlplane.jobs;
 
+import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.AttemptRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobEventRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobRepository;
 import io.github.martiaaguilera.quantarun.controlplane.security.Caller;
@@ -16,10 +17,12 @@ public class JobQueries {
 
     private final JobRepository jobs;
     private final JobEventRepository events;
+    private final AttemptRepository attempts;
 
-    JobQueries(JobRepository jobs, JobEventRepository events) {
+    JobQueries(JobRepository jobs, JobEventRepository events, AttemptRepository attempts) {
         this.jobs = jobs;
         this.events = events;
+        this.attempts = attempts;
     }
 
     /** A job of another project is reported as missing: its existence is not disclosed. */
@@ -46,5 +49,10 @@ public class JobQueries {
     public List<JobEvent> events(Caller caller, UUID jobId) {
         get(caller, jobId);
         return events.findByJob(jobId);
+    }
+
+    public List<AttemptRepository.AttemptView> attempts(Caller caller, UUID jobId) {
+        get(caller, jobId);
+        return attempts.findByJob(jobId);
     }
 }

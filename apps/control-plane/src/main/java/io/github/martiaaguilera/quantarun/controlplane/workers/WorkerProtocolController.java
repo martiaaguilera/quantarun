@@ -31,13 +31,6 @@ class WorkerProtocolController {
         return registry.register(request);
     }
 
-    @PostMapping("/heartbeat")
-    WorkerProtocol.HeartbeatResponse heartbeat(
-            @RequestAttribute(WorkerAuthenticationFilter.PRINCIPAL_ATTRIBUTE) WorkerPrincipal principal,
-            @Valid @RequestBody WorkerProtocol.HeartbeatRequest request) {
-        return registry.heartbeat(principal.requireRegisteredWorker(), request.activeAttemptIds());
-    }
-
     @PostMapping("/deregister")
     DeregisterResponse deregister(
             @RequestAttribute(WorkerAuthenticationFilter.PRINCIPAL_ATTRIBUTE) WorkerPrincipal principal) {

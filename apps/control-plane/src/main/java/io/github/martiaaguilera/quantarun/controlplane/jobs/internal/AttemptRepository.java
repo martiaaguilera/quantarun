@@ -1,6 +1,8 @@
 package io.github.martiaaguilera.quantarun.controlplane.jobs.internal;
 
 import io.github.martiaaguilera.quantarun.controlplane.jobs.AttemptStatus;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -72,17 +74,30 @@ public class AttemptRepository {
      * worker has not seen them yet. RUNNING ones are renewed only if the worker reports them, so an attempt the worker
      * lost track of still expires. An already-expired lease is never renewed (invariant I10): if the reaper holds the
      * row, this statement waits, re-checks the predicate and skips the now-LOST attempt.
+     *
+     * <p>The rows are locked in id order before they are updated. A plain multi-row UPDATE locks rows in whatever
+     * order the plan visits them, so two overlapping heartbeats of one worker (a retry after a client timeout, or two
+     * control-plane instances) deadlocked in {@code LeaseRecoveryTest}; a fixed order makes them queue instead.
      */
     public List<UUID> renewLeases(UUID workerId, List<UUID> runningAttemptIds, Duration leaseDuration) {
         return jdbc.sql("""
-                        UPDATE job_attempts
+                        WITH renewable AS (
+                            SELECT id FROM job_attempts
+                            WHERE worker_id = :workerId
+                              AND status IN ('ASSIGNED', 'RUNNING')
+                              AND lease_expires_at > now()
+                              AND (status = 'ASSIGNED' OR id = ANY(:ids))
+                            ORDER BY id
+                            FOR UPDATE
+                        )
+                        UPDATE job_attempts a
                         SET lease_expires_at = now() + make_interval(secs => :leaseSeconds),
-                            lease_renewals = lease_renewals + 1
-                        WHERE worker_id = :workerId
-                          AND status IN ('ASSIGNED', 'RUNNING')
-                          AND lease_expires_at > now()
-                          AND (status = 'ASSIGNED' OR id = ANY(:ids))
-                        RETURNING id
+                            lease_renewals = a.lease_renewals + 1
+                        FROM renewable r
+                        WHERE a.id = r.id
+                          AND a.status IN ('ASSIGNED', 'RUNNING')
+                          AND a.lease_expires_at > now()
+                        RETURNING a.id
                         """)
                 .param("workerId", workerId)
                 .param("ids", runningAttemptIds.toArray(UUID[]::new))
@@ -109,18 +124,19 @@ public class AttemptRepository {
         return jdbc.sql("""
                         SELECT id, job_id, attempt_no, worker_id, status, cpu_millis, memory_mib, accelerators
                         FROM job_attempts WHERE id = :id FOR UPDATE
-                        """)
-                .param("id", attemptId)
-                .query((rs, row) -> new LockedAttempt(
-                        rs.getObject("id", UUID.class),
-                        rs.getObject("job_id", UUID.class),
-                        rs.getInt("attempt_no"),
-                        rs.getObject("worker_id", UUID.class),
-                        AttemptStatus.valueOf(rs.getString("status")),
-                        rs.getInt("cpu_millis"),
-                        rs.getInt("memory_mib"),
-                        rs.getInt("accelerators")))
-                .optional();
+                        """).param("id", attemptId).query(this::mapLocked).optional();
+    }
+
+    private LockedAttempt mapLocked(ResultSet rs, int row) throws SQLException {
+        return new LockedAttempt(
+                rs.getObject("id", UUID.class),
+                rs.getObject("job_id", UUID.class),
+                rs.getInt("attempt_no"),
+                rs.getObject("worker_id", UUID.class),
+                AttemptStatus.valueOf(rs.getString("status")),
+                rs.getInt("cpu_millis"),
+                rs.getInt("memory_mib"),
+                rs.getInt("accelerators"));
     }
 
     public void finish(
@@ -146,17 +162,26 @@ public class AttemptRepository {
     }
 
     /**
-     * Expired leases, oldest first. SKIP LOCKED: an attempt locked by a concurrent report or renewal is someone
+     * Locks the oldest expired leases. SKIP LOCKED: an attempt locked by a concurrent report or renewal is someone
      * else's to resolve; several reapers can run at once and never handle the same attempt twice.
+     *
+     * <p>The batch is returned in worker id order, not expiry order. Ending each attempt locks its worker row and
+     * holds it until commit, so a batch spanning several workers takes several worker locks; taking them in the same
+     * ascending order as the scheduler is what keeps two reapers (or a reaper and a scheduler) from deadlocking. The
+     * sort happens in SQL so it matches PostgreSQL's uuid ordering, which differs from {@link UUID#compareTo}.
      */
-    public List<UUID> lockExpired(int limit) {
+    public List<LockedAttempt> lockExpired(int limit) {
         return jdbc.sql("""
-                        SELECT id FROM job_attempts
-                        WHERE status IN ('ASSIGNED', 'RUNNING') AND lease_expires_at < now()
-                        ORDER BY lease_expires_at
-                        LIMIT :limit
-                        FOR UPDATE SKIP LOCKED
-                        """).param("limit", limit).query(UUID.class).list();
+                        SELECT id, job_id, attempt_no, worker_id, status, cpu_millis, memory_mib, accelerators
+                        FROM (
+                            SELECT * FROM job_attempts
+                            WHERE status IN ('ASSIGNED', 'RUNNING') AND lease_expires_at < now()
+                            ORDER BY lease_expires_at
+                            LIMIT :limit
+                            FOR UPDATE SKIP LOCKED
+                        ) expired
+                        ORDER BY worker_id, id
+                        """).param("limit", limit).query(this::mapLocked).list();
     }
 
     /**
