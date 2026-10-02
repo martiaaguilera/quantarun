@@ -22,6 +22,8 @@ public record PlacementDecision(
         PLACED,
         /** Compatible workers exist but none has enough free capacity now: the job stays queued. */
         WAITING_FOR_CAPACITY,
+        /** It could run now, but its project is at a quota (running jobs or accelerators): it waits for its own work. */
+        WAITING_FOR_QUOTA,
         /** No live worker could run it even if idle (labels or size): it stays queued, flagged for the operator. */
         UNSCHEDULABLE
     }

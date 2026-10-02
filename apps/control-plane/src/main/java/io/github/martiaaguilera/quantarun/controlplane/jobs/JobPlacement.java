@@ -3,9 +3,12 @@ package io.github.martiaaguilera.quantarun.controlplane.jobs;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobEventRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobRepository;
 import java.time.Duration;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
@@ -21,11 +24,18 @@ public class JobPlacement {
     /** Which runnable jobs enter the scheduler's window when more are waiting than one cycle considers. */
     public enum WindowOrder {
         OLDEST_FIRST("available_at, id"),
-        HIGHEST_PRIORITY_FIRST("priority DESC, available_at, id");
+        HIGHEST_PRIORITY_FIRST("priority DESC, available_at, id"),
+        EARLIEST_DEADLINE_FIRST("deadline_at NULLS LAST, priority DESC, available_at, id"),
+        /**
+         * Round-robin over projects: every backlogged project's oldest jobs, taken rank by rank. With an oldest-first
+         * window, a project that queued 10,000 jobs would fill every window and the fair-share policy would never even
+         * see the other projects' jobs.
+         */
+        PER_PROJECT_ROUND_ROBIN(null);
 
-        private final String orderBy;
+        private final @Nullable String orderBy;
 
-        WindowOrder(String orderBy) {
+        WindowOrder(@Nullable String orderBy) {
             this.orderBy = orderBy;
         }
     }
@@ -46,7 +56,33 @@ public class JobPlacement {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public List<Job> lockRunnableJobs(int limit, WindowOrder order) {
-        return jobs.lockRunnable(limit, order.orderBy);
+        return order == WindowOrder.PER_PROJECT_ROUND_ROBIN
+                ? jobs.lockRunnableRoundRobin(limit)
+                : jobs.lockRunnable(limit, order.orderBy);
+    }
+
+    public record ProjectUsage(int runningJobs, int acceleratorsInUse) {}
+
+    /**
+     * Active attempts per project, for quota checks. MANDATORY and read after the cycle has locked the workers: every
+     * other cycle that places work holds those same locks until it commits, so this count cannot miss a concurrent
+     * placement, and a quota can never be overrun by two cycles at once.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Map<UUID, ProjectUsage> activeUsage(Collection<UUID> projectIds) {
+        var usage = new HashMap<UUID, ProjectUsage>();
+        jdbc.sql("""
+                        SELECT j.project_id, count(*) AS running, coalesce(sum(a.accelerators), 0) AS accelerators
+                        FROM job_attempts a JOIN jobs j ON j.id = a.job_id
+                        WHERE a.status IN ('ASSIGNED', 'RUNNING') AND j.project_id = ANY(:ids)
+                        GROUP BY j.project_id
+                        """)
+                .param("ids", projectIds.toArray(UUID[]::new))
+                .query((rs, row) -> usage.put(
+                        rs.getObject("project_id", UUID.class),
+                        new ProjectUsage(rs.getInt("running"), rs.getInt("accelerators"))))
+                .list();
+        return usage;
     }
 
     /**

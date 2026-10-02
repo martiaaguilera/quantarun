@@ -10,11 +10,13 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import java.util.List;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -29,6 +31,16 @@ class ProjectController {
             String name,
 
             @Min(1) @Max(1000) Integer weight) {}
+
+    /**
+     * The full set of limits, replaced as a whole (PUT semantics): an omitted quota becomes unlimited, so a request
+     * always states the complete policy rather than patching part of it.
+     */
+    record ProjectLimits(
+            @NotNull @Min(1) @Max(1000) Integer weight,
+            @Min(1) @Max(1_000_000) @Nullable Integer maxQueuedJobs,
+            @Min(1) @Max(100_000) @Nullable Integer maxRunningJobs,
+            @Min(0) @Max(10_000) @Nullable Integer maxAccelerators) {}
 
     private final ProjectRepository projects;
 
@@ -61,6 +73,19 @@ class ProjectController {
             throw projectNotFound(projectId);
         }
         return projects.findById(projectId).orElseThrow(() -> projectNotFound(projectId));
+    }
+
+    /** Operators set a project's fair-share weight and quotas. They apply from the next submission or cycle on. */
+    @PutMapping("/{projectId}/limits")
+    Project updateLimits(Caller caller, @PathVariable UUID projectId, @Valid @RequestBody ProjectLimits limits) {
+        caller.requireAdmin();
+        return projects.updateLimits(
+                        projectId,
+                        limits.weight(),
+                        limits.maxQueuedJobs(),
+                        limits.maxRunningJobs(),
+                        limits.maxAccelerators())
+                .orElseThrow(() -> projectNotFound(projectId));
     }
 
     private static ApiException projectNotFound(UUID projectId) {
