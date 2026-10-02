@@ -51,4 +51,13 @@ public class WorkerCapacity {
     public void reserve(UUID workerId, int cpuMillis, int memoryMib, int accelerators) {
         workers.addReservation(workerId, cpuMillis, memoryMib, accelerators);
     }
+
+    /**
+     * Returns an ended attempt's reservation. Must run in the transaction that ends the attempt, so a reservation is
+     * released exactly once (invariant I2); a second release would trip the CHECK constraints.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void release(UUID workerId, int cpuMillis, int memoryMib, int accelerators) {
+        workers.releaseReservation(workerId, cpuMillis, memoryMib, accelerators);
+    }
 }

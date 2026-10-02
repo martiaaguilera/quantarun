@@ -8,7 +8,7 @@ import org.springframework.http.HttpStatus;
  * Who is calling the worker protocol. The credential type, not the request path, decides what a call may do:
  * the bootstrap token can only register, and a worker credential can only act as the worker it was issued to.
  */
-sealed interface WorkerPrincipal {
+public sealed interface WorkerPrincipal {
 
     record Bootstrap() implements WorkerPrincipal {}
 

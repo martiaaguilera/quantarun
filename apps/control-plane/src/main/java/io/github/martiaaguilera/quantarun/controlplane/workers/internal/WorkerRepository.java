@@ -96,6 +96,27 @@ public class WorkerRepository {
         }
     }
 
+    /** The CHECK constraints reject a release below zero, which would mean a reservation was released twice. */
+    public void releaseReservation(UUID workerId, int cpuMillis, int memoryMib, int accelerators) {
+        var updated = jdbc.sql("""
+                        UPDATE workers
+                        SET cpu_millis_reserved = cpu_millis_reserved - :cpu,
+                            memory_mib_reserved = memory_mib_reserved - :memory,
+                            accelerators_reserved = accelerators_reserved - :accelerators,
+                            slots_reserved = slots_reserved - 1,
+                            updated_at = now()
+                        WHERE id = :id
+                        """)
+                .param("cpu", cpuMillis)
+                .param("memory", memoryMib)
+                .param("accelerators", accelerators)
+                .param("id", workerId)
+                .update();
+        if (updated != 1) {
+            throw new IllegalStateException("Worker " + workerId + " vanished while releasing a reservation");
+        }
+    }
+
     public Optional<Worker> findById(UUID id) {
         return jdbc.sql(SELECT_WORKERS + " WHERE w.id = :id")
                 .param("id", id)

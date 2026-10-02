@@ -18,9 +18,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * controller acts on the authenticated worker id, never on a client-supplied one, so one worker cannot heartbeat or
  * report for another.
  */
-class WorkerAuthenticationFilter extends OncePerRequestFilter {
+public class WorkerAuthenticationFilter extends OncePerRequestFilter {
 
-    static final String PRINCIPAL_ATTRIBUTE = "quantarun.workerPrincipal";
+    /** Request attribute holding the {@link WorkerPrincipal}; read by worker-protocol controllers. */
+    public static final String PRINCIPAL_ATTRIBUTE = "quantarun.workerPrincipal";
+
     private static final String BEARER = "Bearer ";
 
     private final byte[] bootstrapToken;
