@@ -303,6 +303,11 @@ class LeaseRecoveryTest {
                     do {
                         count = attempts.recoverExpiredLeases(7);
                         reaped.addAndGet(count);
+                        if (count == 0) {
+                            // The real reaper runs on a tick; spinning would close the window between expiry and
+                            // recovery that a report must also be able to land in.
+                            Thread.sleep(2);
+                        }
                     } while (count > 0 || expiring.get());
                     return null;
                 });
