@@ -152,7 +152,8 @@ attempted. Redirects are not followed. An operator can allow specific internal I
 
 | Race | Outcome | Proof |
 |---|---|---|
-| Worker reports success while the reaper recovers the expired lease | Both lock the attempt row; whoever gets it first decides; the other sees a non-active attempt (report → 409, reaper → skips it) | `completionRacingLeaseExpiry_hasExactlyOneWinnerPerAttempt` |
+| Worker reports success while its lease expires and the reaper recovers it | A report that takes the attempt's row lock while the lease is held wins, and the reaper skips the attempt. Once the lease has expired the report is refused (409 `LEASE_EXPIRED`, or `ATTEMPT_NOT_ACTIVE` after recovery) and the reaper recovers it | `completionRacingLeaseExpiry_hasExactlyOneWinnerPerAttempt` |
+| A report arrives after the lease expired but before the reaper ran | 409 `LEASE_EXPIRED`, consistent with the heartbeat, which already called the attempt lost; the worker drops it | `report_afterLeaseExpiry_beforeRecovery_isFencedWith409` |
 | Heartbeat renews while the reaper recovers | An expired lease is never renewed, even after waiting for the reaper's lock | `heartbeatRacingTheReaper_neverRevivesAnExpiredLease` |
 | A late report after recovery | 409 `ATTEMPT_NOT_ACTIVE`; the worker drops it and does not retry | `report_afterLeaseRecovery_isFencedWith409` |
 | The same report delivered twice | The second gets the recorded outcome (200) | `report_duplicateIsAnsweredIdempotently_aDifferentOutcomeIsRejected` |

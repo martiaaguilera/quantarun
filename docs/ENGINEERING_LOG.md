@@ -2,6 +2,32 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-04: A report could finish an attempt its heartbeat had already called lost
+The race tests each prove one interleaving family. `ConcurrencyTortureTest` runs everything at once: four
+schedulers on random policies, six simulated workers that claim, heartbeat, checkpoint, succeed, fail, repeat
+reports and crash, a reaper, a clock that expires leases, cancellation, revive and duplicate submissions, with an
+auditor checking I1–I3 in every snapshot. In its first run, one worker reported success for an attempt that its own
+heartbeat had just returned as lost, and the report was applied.
+
+The heartbeat refused to renew the lease because it had expired. The reaper had not run yet, so the attempt was still
+RUNNING, and the report checked only status and ownership. I6 held, because one success is one success. But the control
+plane answered "lost" and "yours" about the same attempt within milliseconds. The real worker stops silently on
+"lost", so nothing broke in practice. A worker that was slow rather than dead could still complete work the heartbeat
+had already given up.
+
+The fix makes expiry a single decision point. Claim and renewal already required `lease_expires_at > now()`; report
+and checkpoint now ask the same question after taking the attempt's row lock, and answer `409 LEASE_EXPIRED`. After
+expiry, only the reaper can act on the attempt. The cost is that a worker finishing just after its lease ran out
+loses that work to a retry. With a 15 s lease and 3 s heartbeats, that worker has missed five heartbeats and is
+presumed dead anyway. `completionRacingLeaseExpiry_hasExactlyOneWinnerPerAttempt` used to expire every lease before
+the race, which would now make the report always lose. It now expires leases one by one while the reports and
+reapers run, and requires all three endings (report wins, refused after expiry, rejected after recovery) to occur.
+
+Two first-run failures were the test's own. Simulated workers renewed leases without the liveness heartbeat, so the
+scheduler rightly stopped trusting them. Unbounded submissions also queued about 4,000 jobs, which 18 slots could not
+drain in 90 s. Submissions are now capped at 1,500. The same run showed roughly 12 placements a second with four
+schedulers contending for worker locks over a 4,000-job queue. That is a lead for Phase 13, not a measured benchmark.
+
 ## 2026-10-04: Tailing job_events by id loses late commits
 The first SSE design remembered the highest id sent and asked for `id > last`. Ids come from an identity sequence and
 are taken at insert, so a transaction that inserted id 41 and committed after the one holding id 42 was never sent.

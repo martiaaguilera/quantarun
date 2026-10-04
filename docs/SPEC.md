@@ -176,8 +176,8 @@ body.
   `INSERT ... ON CONFLICT DO NOTHING`, never by check-then-insert.
 
 Worker reports are idempotent too. Reporting the same outcome twice for the same attempt returns the
-recorded outcome. A report for an attempt that is no longer active is rejected (`409`), which fences
-stale workers.
+recorded outcome. A report for an attempt that is no longer active, or whose lease has expired, is rejected (`409`), which fences
+stale workers: once a lease expires, the attempt can only be recovered.
 
 ## 10. Checkpoints
 
