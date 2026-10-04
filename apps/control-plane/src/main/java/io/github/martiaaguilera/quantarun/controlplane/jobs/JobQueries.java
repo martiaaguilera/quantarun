@@ -41,18 +41,33 @@ public class JobQueries {
                 .orElseThrow(() -> new JobNotFoundException(jobId));
     }
 
-    public List<Job> list(
-            Caller caller,
-            @Nullable UUID requestedProjectId,
+    /** What a job list can be narrowed by; every field is optional. */
+    public record JobFilter(
+            @Nullable UUID projectId,
             @Nullable JobStatus status,
-            @Nullable UUID before,
-            int limit) {
+            @Nullable WorkloadType workloadType,
+            @Nullable Integer priority,
+            @Nullable UUID workerId,
+            @Nullable Instant createdFrom,
+            @Nullable Instant createdTo) {}
+
+    /** A project member always sees its own project only, whatever the filter asks for. */
+    public List<Job> list(Caller caller, JobFilter filter, @Nullable UUID before, int limit) {
         var projectId = switch (caller) {
-            case Caller.Admin _ -> requestedProjectId;
+            case Caller.Admin _ -> filter.projectId();
             case Caller.ProjectMember member -> member.projectId();
         };
         var bounded = Math.clamp(limit, 1, MAX_PAGE_SIZE);
-        return jobs.list(new JobRepository.ListFilter(projectId, status, before, bounded));
+        return jobs.list(new JobRepository.ListFilter(
+                projectId,
+                filter.status(),
+                filter.workloadType() == null ? null : filter.workloadType().wireName(),
+                filter.priority(),
+                filter.workerId(),
+                filter.createdFrom(),
+                filter.createdTo(),
+                before,
+                bounded));
     }
 
     public List<JobEvent> events(Caller caller, UUID jobId) {
@@ -63,6 +78,15 @@ public class JobQueries {
     public List<AttemptRepository.AttemptView> attempts(Caller caller, UUID jobId) {
         get(caller, jobId);
         return attempts.findByJob(jobId);
+    }
+
+    /** Job counts and recent outcomes, over every project for an operator and over its own for a project. */
+    public JobSummary summary(Caller caller) {
+        var projectId = switch (caller) {
+            case Caller.Admin _ -> null;
+            case Caller.ProjectMember member -> member.projectId();
+        };
+        return jobs.summary(projectId);
     }
 
     /** The worker holding the job's active (assigned or running) attempt, if it has one. */

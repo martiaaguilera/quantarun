@@ -10,6 +10,9 @@ quantarun:
   scheduler:
     # Tests drive SchedulingCycle directly; background loops would race them.
     enabled: false
+  events:
+    # Tests drive JobEventStream.poll() themselves.
+    poll-enabled: false
   metrics:
     # Tests refresh the gauges when they assert on them; a background refresh would race TRUNCATE.
     gauges-enabled: false

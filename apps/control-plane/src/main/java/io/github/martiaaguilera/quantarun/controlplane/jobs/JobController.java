@@ -192,9 +192,22 @@ class JobController {
             Caller caller,
             @RequestParam(required = false) @Nullable UUID projectId,
             @RequestParam(required = false) @Nullable JobStatus status,
+            @RequestParam(required = false) @Nullable String workloadType,
+            @RequestParam(required = false) @Min(0) @Max(9) @Nullable Integer priority,
+            @RequestParam(required = false) @Nullable UUID workerId,
+            @RequestParam(required = false) @Nullable Instant createdFrom,
+            @RequestParam(required = false) @Nullable Instant createdTo,
             @RequestParam(required = false) @Nullable UUID before,
             @RequestParam(defaultValue = "50") @Min(1) @Max(JobQueries.MAX_PAGE_SIZE) int limit) {
-        var jobs = queries.list(caller, projectId, status, before, limit);
+        var type = workloadType == null
+                ? null
+                : WorkloadType.fromWireName(workloadType)
+                        .orElseThrow(() -> new ApiException(
+                                HttpStatus.BAD_REQUEST,
+                                "UNKNOWN_WORKLOAD_TYPE",
+                                "Unknown workload type '" + workloadType + "'."));
+        var filter = new JobQueries.JobFilter(projectId, status, type, priority, workerId, createdFrom, createdTo);
+        var jobs = queries.list(caller, filter, before, limit);
         var nextBefore = jobs.size() == limit ? jobs.getLast().id() : null;
         return new JobPage(jobs.stream().map(JobResponse::from).toList(), nextBefore);
     }
