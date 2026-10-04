@@ -45,10 +45,10 @@ Packages under `io.github.martiaaguilera.quantarun`, verified by Spring Modulith
 | `scheduler.policy` | **pure** policies (no Spring, no SQL); shared with `simulation` |
 | `reliability` | the lease reaper (retry decisions live with the attempt-ending transaction in `jobs`) |
 | `simulation` | scenarios, trace generation, the discrete-event engine, metrics |
-| `chaos` | predefined fault scenarios targeting QuantaRun's own workers |
+| `chaos` | the fault catalogue, experiments, their delivery to workers in heartbeat responses, and recovery timelines |
 | `web` | cross-cutting HTTP concerns: Problem Details, security filter, SSE |
 
-Allowed dependencies point inward: `scheduler → jobs, workers, projects`; `execution → jobs, workers`; `reliability → jobs`; `jobs → workers`;
+Allowed dependencies point inward: `scheduler → jobs, workers, projects`; `execution → jobs, workers, chaos`; `chaos → jobs, workers`; `reliability → jobs`; `jobs → workers`;
 `simulation → scheduler::policy` (a named interface) and `jobs` (only the pure `RetryPolicy`). The policies depend on nothing except their own snapshot records.
 
 ## 3. Persistence
@@ -68,8 +68,11 @@ all DDL. The core tables (the authoritative definitions are the migrations under
 | `job_checkpoints` | `unique(job_id, stage_index)` |
 | `job_events` | append-only timeline |
 | `scheduler_decisions` | policy, outcome, chosen worker, bounded `candidates jsonb` |
+| `simulation_runs` | scenario, seed, `job_count` (CHECK 1–20,000), requesting project, `results jsonb` |
+| `chaos_experiments` | `fault` and `status` (CHECK in enum), target worker (and job), bounded parameter columns (CHECKs), `deliver_by`; partial index on pending experiments per worker |
 
-JSONB is used only for workload payloads, checkpoint results, event details and decision candidate lists.
+JSONB is used only for workload payloads, checkpoint results, event details, decision candidate lists and stored
+simulation results.
 Every field the scheduler filters or sorts on is a real column.
 
 ## 4. Concurrency model
@@ -112,7 +115,9 @@ families can never overlap (see ENGINEERING_LOG). Registration presents the shar
 plane acts on the authenticated worker id, never a client-supplied one.
 1. `POST register`: capacity, labels and version. Returns the worker id, its credential and the timing configuration.
 2. `POST heartbeat` every 3 s, carrying the ids of the worker's active attempts. The response contains
-   cancel requests and leases that are no longer valid, which the worker must stop immediately.
+   cancel requests and leases that are no longer valid, which the worker must stop immediately, and any chaos faults
+   aimed at this worker (ADR-0007, CHAOS.md). Heartbeats renew the leases of running attempts the worker lists, and of
+   unclaimed assignments for at most `claim-timeout` (30 s), so a worker whose intake is stuck cannot hold work.
 3. `POST deregister`: on graceful shutdown. Leaves immediately with nothing reserved, otherwise drains first.
 4. `POST claim`: returns up to `maxAssignments` ASSIGNED attempts of this worker with their payloads, and starts them
    (RUNNING). The worker polls it every 500 ms while it has free slots, and at once after a claim that returned work.

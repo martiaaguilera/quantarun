@@ -4,7 +4,7 @@ A local-first control plane for scheduling, executing, recovering, replaying and
 workloads. It uses PostgreSQL for coordination and OpenTelemetry for visibility, and runs at zero cost with no
 API keys.
 
-> **Status: early development (Phase 8 of 15).** Implemented so far: the job API with a centrally enforced state
+> **Status: early development (Phase 9 of 15).** Implemented so far: the job API with a centrally enforced state
 > machine, idempotent submission (proven with 500 concurrent duplicates on real PostgreSQL), cooperative
 > cancellation, project-scoped API keys and OpenAPI. On the fleet side: three heterogeneous workers that register with
 > per-worker credentials, heartbeat, drain and deregister; silent ones are retired, with a grace period after a
@@ -18,8 +18,10 @@ API keys.
 > Projects share the fleet fairly (weighted virtual time: a tenant flooding the queue cannot starve another), deadlines
 > can be scheduled earliest-first, and per-project quotas hold work back with a stated reason
 > ([docs/SCHEDULER.md](docs/SCHEDULER.md)). A deterministic simulator replays eight scenarios through the same planner
-> and compares the policies; the same seed gives the same result hash ([docs/SIMULATION.md](docs/SIMULATION.md)). Chaos,
-> observability and the console come next. This README only describes what exists.
+> and compares the policies; the same seed gives the same result hash ([docs/SIMULATION.md](docs/SIMULATION.md)). An
+> operator can inject eight predefined faults into the workers (crash, silence, stuck intake, latency, stalls, provider
+> 429/500/garbage) and read the recovery timeline ([docs/CHAOS.md](docs/CHAOS.md)). Observability and the console come
+> next. This README only describes what exists.
 
 ## What it will be
 

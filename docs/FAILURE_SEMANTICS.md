@@ -33,6 +33,8 @@ side effects; `staged` writes only its own checkpoints, which are fenced.
 | `http`: 502, 503, 504 / other 5xx / 408 / other 4xx | worker | FAILED | PROVIDER_UNAVAILABLE / TRANSIENT / TIMEOUT / NON_RETRYABLE | per class |
 | `http`: connection failure / timeout | worker | FAILED | TRANSIENT / TIMEOUT | retry with backoff |
 | A checkpoint is rejected (the attempt was recovered meanwhile) | worker | – (no report) | – | the control plane already decided |
+| An assignment stays unclaimed past the claim timeout (30 s) while its worker heartbeats | control plane (renewal stops, then the lease reaper) | LOST | WORKER_LOST | retry at once on any worker |
+| `mock-inference`, chaos: provider 429 / 500 / malformed response | worker | FAILED | RATE_LIMITED with Retry-After / TRANSIENT / TRANSIENT | per class (CHAOS.md) |
 
 A worker can never report `WORKER_LOST` (400 `INVALID_REPORT`): a worker that is reporting is evidently not lost.
 A FAILED report must carry a failure class, and other outcomes must not.
@@ -159,6 +161,7 @@ attempted. Redirects are not followed. An operator can allow specific internal I
 | Cancel races a failure report | Report first: RETRY_WAIT, then the cancel ends it. Cancel first: the failure's retry decision sees the flag. Either way CANCELLED, never retried | `cancelRacingAFailureReport_alwaysEndsCancelled` |
 | A checkpoint races lease recovery | Both lock the attempt row: the checkpoint commits while the attempt still runs, or is refused because it no longer does | `checkpointRacingLeaseRecovery_isNeverCommittedByARecoveredAttempt` |
 | Concurrent revives | One conditional update matches; the others get 409 | `concurrentRevives_reviveExactlyOnce` |
+| Overlapping heartbeats of one worker pick up its chaos faults | Each fault is delivered by exactly one of them | `concurrentHeartbeats_deliverEachFaultExactlyOnce` |
 
 ## Worker-side behaviour
 

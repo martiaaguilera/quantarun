@@ -61,7 +61,56 @@ public final class WorkerProtocol {
      *     report a result for them.
      */
     public record HeartbeatResponse(
-            WorkerLifecycleView lifecycle, List<UUID> cancelAttemptIds, List<UUID> lostAttemptIds) {}
+            WorkerLifecycleView lifecycle,
+            List<UUID> cancelAttemptIds,
+            List<UUID> lostAttemptIds,
+            List<ChaosDirective> chaos) {
+
+        public HeartbeatResponse {
+            chaos = chaos == null ? List.of() : List.copyOf(chaos);
+        }
+    }
+
+    /**
+     * The predefined faults a worker can inject into itself, and nothing else: there is no way to send a command, a
+     * path or code. A worker applies them only when its operator started it with chaos enabled.
+     */
+    public enum ChaosFault {
+        /** Halt this worker process abruptly, as a crash would: no deregistration and no final reports. */
+        KILL_WORKER,
+        /** Keep working but send no heartbeats, so leases expire and the registration is eventually retired. */
+        PAUSE_HEARTBEAT,
+        /** Claim nothing: this worker's capacity disappears while the scheduler still believes in it. */
+        STOP_CLAIMING,
+        /** Delay every call to the control plane. */
+        NETWORK_LATENCY,
+        /** The next attempts hang until their timeout. */
+        STALL_ATTEMPTS,
+        /** The next provider calls (mock inference) answer 429 with a Retry-After. */
+        PROVIDER_RATE_LIMITED,
+        /** The next provider calls answer 500. */
+        PROVIDER_ERROR,
+        /** The next provider calls answer with a body that cannot be parsed. */
+        PROVIDER_MALFORMED
+    }
+
+    /**
+     * One fault to inject. Only the parameters its fault uses are meaningful; the control plane bounds all of them.
+     *
+     * @param delayMillis KILL_WORKER: how long to wait before halting.
+     * @param durationMillis how long a time-boxed fault (pause, stop claiming, latency) lasts.
+     * @param count how many attempts or provider calls a counted fault affects.
+     * @param retryAfterMillis PROVIDER_RATE_LIMITED: the Retry-After the fake provider sends.
+     * @param latencyMillis NETWORK_LATENCY: added to every control-plane call.
+     */
+    public record ChaosDirective(
+            UUID experimentId,
+            ChaosFault fault,
+            long delayMillis,
+            long durationMillis,
+            int count,
+            long retryAfterMillis,
+            long latencyMillis) {}
 
     public enum WorkerLifecycleView {
         ACTIVE,

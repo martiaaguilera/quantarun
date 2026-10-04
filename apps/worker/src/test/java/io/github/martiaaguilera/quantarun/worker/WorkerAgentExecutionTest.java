@@ -7,6 +7,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
+import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
 import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
 import java.net.URI;
@@ -58,14 +59,17 @@ class WorkerAgentExecutionTest {
                 Duration.ofMillis(500),
                 Duration.ofSeconds(5),
                 3,
-                List.of());
+                List.of(),
+                true);
         executor = new AttemptExecutor(
                 client,
                 2,
                 new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
                 new AttemptExecutor.HttpSettings(List.of(), Duration.ofSeconds(1)),
+                ChaosInjector.disabled(),
                 RandomGenerator.of("L64X128MixRandom"));
-        agent = new WorkerAgent(client, executor, settings, "test", RandomGenerator.of("L64X128MixRandom"));
+        agent = new WorkerAgent(
+                client, executor, settings, ChaosInjector.disabled(), "test", RandomGenerator.of("L64X128MixRandom"));
     }
 
     @AfterEach

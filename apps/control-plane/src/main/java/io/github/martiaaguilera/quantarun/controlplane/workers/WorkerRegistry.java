@@ -99,6 +99,15 @@ public class WorkerRegistry {
         return workers.findById(workerId).orElseThrow(() -> new WorkerNotFoundException(workerId));
     }
 
+    public Optional<Worker> find(UUID workerId) {
+        return workers.findById(workerId);
+    }
+
+    /** Registrations under {@code name} since {@code since}, oldest first: how a restarted worker shows up again. */
+    public List<Worker> registrationsSince(String name, java.time.Instant since, int limit) {
+        return workers.findByNameRegisteredSince(name, since, limit);
+    }
+
     /** Called periodically by the liveness monitor. Does nothing during the startup grace period. */
     public List<WorkerRepository.RetiredWorker> retireSilentWorkers() {
         if (clock.instant().isBefore(retirementAllowedFrom)) {

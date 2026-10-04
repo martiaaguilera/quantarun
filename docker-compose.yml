@@ -5,6 +5,8 @@ name: quantarun
 x-worker-env: &worker-env
   QUANTARUN_CONTROL_PLANE_URL: http://control-plane:8080
   QUANTARUN_WORKER_BOOTSTRAP_TOKEN: ${QUANTARUN_WORKER_BOOTSTRAP_TOKEN}
+  # Workers apply chaos faults only when started with this on (docs/CHAOS.md).
+  QUANTARUN_WORKER_CHAOS_ENABLED: ${QUANTARUN_CHAOS_ENABLED:-false}
 
 x-worker: &worker
   build:
@@ -18,6 +20,9 @@ x-worker: &worker
       condition: service_healthy
   # Graceful stop lets the worker deregister; keep it above spring.lifecycle.timeout-per-shutdown-phase.
   stop_grace_period: 40s
+  # A crashed worker (or one halted by the KILL_WORKER fault) comes back and registers as a new member, as it would
+  # under any process supervisor. A deliberate `docker compose stop` exits cleanly and is not restarted.
+  restart: on-failure
   healthcheck:
     # Readiness, not liveness: a worker counts as up only once it is registered with the control plane.
     test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health/readiness | grep -q UP"]
@@ -57,6 +62,8 @@ services:
       QUANTARUN_WORKER_BOOTSTRAP_TOKEN: ${QUANTARUN_WORKER_BOOTSTRAP_TOKEN:?set QUANTARUN_WORKER_BOOTSTRAP_TOKEN in .env}
       # FIFO, PRIORITY, LEAST_LOADED, BIN_PACKING, FAIR_SHARE or DEADLINE (docs/SPEC.md §7, docs/SCHEDULER.md).
       QUANTARUN_SCHEDULER_POLICY: ${QUANTARUN_SCHEDULER_POLICY:-BIN_PACKING}
+      # Predefined fault injection through /api/v1/chaos; off unless asked for (docs/CHAOS.md).
+      QUANTARUN_CHAOS_ENABLED: ${QUANTARUN_CHAOS_ENABLED:-false}
     depends_on:
       postgres:
         condition: service_healthy

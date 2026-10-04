@@ -22,6 +22,10 @@ import org.springframework.validation.annotation.Validated;
  *     is down nobody records heartbeats, so right after a restart every live worker looks silent; retiring them
  *     would throw away healthy registrations (and, once leases exist, re-run work that was fine). Defaults to the
  *     offline threshold, which gives every live worker time to heartbeat again.
+ * @param claimTimeout how long heartbeats keep an unclaimed assignment alive. A worker with a free slot claims within
+ *     its claim interval, so an assignment still unclaimed after this means the worker's intake is stuck while its
+ *     heartbeats go on; the lease then runs out and the job moves to another worker. Found by the STOP_CLAIMING chaos
+ *     fault (ENGINEERING_LOG, 2026-10-04).
  */
 @Validated
 @ConfigurationProperties("quantarun.workers")
@@ -32,7 +36,8 @@ public record WorkerProperties(
         @NotNull @DefaultValue("15s") Duration offlineAfter,
         @NotNull @DefaultValue("15s") Duration leaseDuration,
         @NotNull @DefaultValue("1s") Duration livenessCheckInterval,
-        @DefaultValue("15s") Duration startupGrace) {
+        @DefaultValue("15s") Duration startupGrace,
+        @NotNull @DefaultValue("30s") Duration claimTimeout) {
 
     public WorkerProperties {
         // Misordered thresholds would make healthy workers flap between states; fail at startup instead.
@@ -51,12 +56,15 @@ public record WorkerProperties(
         if (leaseDuration.compareTo(heartbeatInterval.multipliedBy(3)) < 0) {
             throw new IllegalArgumentException("lease-duration must cover at least three heartbeat intervals");
         }
+        if (claimTimeout.compareTo(heartbeatInterval) < 0) {
+            throw new IllegalArgumentException("claim-timeout must cover at least one heartbeat interval");
+        }
     }
 
     @Override
     public String toString() {
         return "WorkerProperties[bootstrapToken=<redacted>, heartbeatInterval=" + heartbeatInterval + ", lateAfter="
                 + lateAfter + ", offlineAfter=" + offlineAfter + ", leaseDuration=" + leaseDuration + ", startupGrace="
-                + startupGrace + "]";
+                + startupGrace + ", claimTimeout=" + claimTimeout + "]";
     }
 }

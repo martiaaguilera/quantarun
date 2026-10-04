@@ -1,5 +1,7 @@
 package io.github.martiaaguilera.quantarun.worker.execution;
 
+import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
+import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -22,6 +24,12 @@ final class MockInferenceWorkload implements Workload {
     private static final int VOCABULARY_SIZE = 50_000;
     private static final int PREVIEW_TOKENS = 8;
 
+    private final ChaosInjector chaos;
+
+    MockInferenceWorkload(ChaosInjector chaos) {
+        this.chaos = chaos;
+    }
+
     @Override
     public String type() {
         return "mock-inference";
@@ -35,6 +43,9 @@ final class MockInferenceWorkload implements Workload {
         var seed = payload.optionalLong("seed", Long.MIN_VALUE, Long.MAX_VALUE).orElse(0L);
 
         Thread.sleep(latencyMs);
+        chaos.takeProviderFault().ifPresent(fault -> {
+            throw providerFailure(fault);
+        });
 
         // The prompt size feeds the seed, so two requests that differ only in input size answer differently.
         var random = new SplittableRandom(seed ^ (inputTokens * 0x9E3779B97F4A7C15L));
@@ -58,6 +69,23 @@ final class MockInferenceWorkload implements Workload {
         result.put("outputDigest", HexFormat.of().formatHex(digest.digest()));
         result.put("previewTokenIds", preview);
         return result;
+    }
+
+    /**
+     * Classified the way {@link HttpWorkload} classifies a real provider: 429 is RATE_LIMITED with its Retry-After, and
+     * 500 is TRANSIENT. A body that cannot be parsed is TRANSIENT too: providers send them when a response is cut off or
+     * a proxy answers in their place, and the same request usually succeeds when sent again.
+     */
+    private static WorkloadFailure providerFailure(ChaosInjector.ProviderFault fault) {
+        return switch (fault.fault()) {
+            case PROVIDER_RATE_LIMITED ->
+                new WorkloadFailure(
+                        FailureClass.RATE_LIMITED, "provider answered HTTP 429 (chaos)", fault.retryAfter());
+            case PROVIDER_ERROR -> new WorkloadFailure(FailureClass.TRANSIENT, "provider answered HTTP 500 (chaos)");
+            case PROVIDER_MALFORMED ->
+                new WorkloadFailure(FailureClass.TRANSIENT, "provider response could not be parsed (chaos)");
+            default -> throw new IllegalArgumentException("Not a provider fault: " + fault.fault());
+        };
     }
 
     private static MessageDigest sha256() {

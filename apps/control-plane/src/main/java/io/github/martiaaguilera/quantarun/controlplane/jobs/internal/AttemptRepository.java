@@ -1,6 +1,7 @@
 package io.github.martiaaguilera.quantarun.controlplane.jobs.internal;
 
 import io.github.martiaaguilera.quantarun.controlplane.jobs.AttemptStatus;
+import io.github.martiaaguilera.quantarun.controlplane.jobs.WorkerAttempt;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -71,7 +72,8 @@ public class AttemptRepository {
 
     /**
      * Renews the leases a live worker still holds. Unclaimed (ASSIGNED) attempts are renewed implicitly, because the
-     * worker has not seen them yet. RUNNING ones are renewed only if the worker reports them, so an attempt the worker
+     * worker has not seen them yet, but only for {@code claimTimeout} after placement: a worker that heartbeats yet never
+     * claims would otherwise hold its assignments forever. RUNNING ones are renewed only if the worker reports them, so an attempt the worker
      * lost track of still expires. An already-expired lease is never renewed (invariant I10): if the reaper holds the
      * row, this statement waits, re-checks the predicate and skips the now-LOST attempt.
      *
@@ -79,14 +81,16 @@ public class AttemptRepository {
      * order the plan visits them, so two overlapping heartbeats of one worker (a retry after a client timeout, or two
      * control-plane instances) deadlocked in {@code LeaseRecoveryTest}; a fixed order makes them queue instead.
      */
-    public List<UUID> renewLeases(UUID workerId, List<UUID> runningAttemptIds, Duration leaseDuration) {
+    public List<UUID> renewLeases(
+            UUID workerId, List<UUID> runningAttemptIds, Duration leaseDuration, Duration claimTimeout) {
         return jdbc.sql("""
                         WITH renewable AS (
                             SELECT id FROM job_attempts
                             WHERE worker_id = :workerId
                               AND status IN ('ASSIGNED', 'RUNNING')
                               AND lease_expires_at > now()
-                              AND (status = 'ASSIGNED' OR id = ANY(:ids))
+                              AND ((status = 'ASSIGNED' AND assigned_at > now() - make_interval(secs => :claimSeconds))
+                                   OR id = ANY(:ids))
                             ORDER BY id
                             FOR UPDATE
                         )
@@ -102,6 +106,7 @@ public class AttemptRepository {
                 .param("workerId", workerId)
                 .param("ids", runningAttemptIds.toArray(UUID[]::new))
                 .param("leaseSeconds", leaseDuration.toMillis() / 1000.0)
+                .param("claimSeconds", claimTimeout.toMillis() / 1000.0)
                 .query(UUID.class)
                 .list();
     }
@@ -213,6 +218,36 @@ public class AttemptRepository {
             @Nullable String failureMessage,
             @Nullable String retryDecision,
             tools.jackson.databind.@Nullable JsonNode result) {}
+
+    /**
+     * Attempts a worker held at some point during [from, to]: assigned by {@code to} and not finished before
+     * {@code from}. Finished attempts are not indexed by worker, so this scans {@code job_attempts}: acceptable for an
+     * operator opening one chaos timeline, and the reason it must never join a hot path.
+     */
+    public List<WorkerAttempt> findOnWorkerDuring(
+            UUID workerId, java.time.Instant from, java.time.Instant to, int limit) {
+        return jdbc.sql("""
+                        SELECT id, job_id, attempt_no, status, assigned_at, finished_at, failure_class
+                        FROM job_attempts
+                        WHERE worker_id = :workerId AND assigned_at <= :to
+                          AND (finished_at IS NULL OR finished_at >= :from)
+                        ORDER BY assigned_at, id
+                        LIMIT :limit
+                        """)
+                .param("workerId", workerId)
+                .param("from", java.sql.Timestamp.from(from))
+                .param("to", java.sql.Timestamp.from(to))
+                .param("limit", limit)
+                .query((rs, row) -> new WorkerAttempt(
+                        rs.getObject("id", UUID.class),
+                        rs.getObject("job_id", UUID.class),
+                        rs.getInt("attempt_no"),
+                        AttemptStatus.valueOf(rs.getString("status")),
+                        JobRepository.instant(rs, "assigned_at"),
+                        JobRepository.instant(rs, "finished_at"),
+                        rs.getString("failure_class")))
+                .list();
+    }
 
     public List<AttemptView> findByJob(UUID jobId) {
         return jdbc.sql("""

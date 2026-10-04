@@ -25,6 +25,8 @@ import org.springframework.validation.annotation.Validated;
  * @param reportAttempts how many times an outcome report is sent before the worker gives up and lets the lease expire.
  * @param httpAllowedPrivateAddresses IPs or CIDRs the http workload may call although they are private or loopback
  *     (SSRF exceptions, for a local mock provider). Empty by default: only public addresses are reachable.
+ * @param chaosEnabled whether this worker applies the chaos faults the control plane sends it. Off by default: a
+ *     worker someone did not start for chaos testing ignores them, whatever the control plane asks.
  */
 @Validated
 @ConfigurationProperties("quantarun.worker")
@@ -43,7 +45,8 @@ public record WorkerSettings(
         @NotNull @DefaultValue("500ms") Duration claimInterval,
         @NotNull @DefaultValue("25s") Duration shutdownGrace,
         @Min(1) @Max(20) @DefaultValue("5") int reportAttempts,
-        @NotNull @DefaultValue @Size(max = 32) List<@NotBlank String> httpAllowedPrivateAddresses) {
+        @NotNull @DefaultValue @Size(max = 32) List<@NotBlank String> httpAllowedPrivateAddresses,
+        @DefaultValue("false") boolean chaosEnabled) {
 
     public record Capacity(
             @DefaultValue("2000") int cpuMillis,
@@ -60,6 +63,6 @@ public record WorkerSettings(
     public String toString() {
         return "WorkerSettings[controlPlaneUrl=" + controlPlaneUrl + ", name=" + name + ", labels=" + labels
                 + ", capacity=" + capacity + ", claimInterval=" + claimInterval + ", shutdownGrace=" + shutdownGrace
-                + ", bootstrapToken=<redacted>]";
+                + ", chaosEnabled=" + chaosEnabled + ", bootstrapToken=<redacted>]";
     }
 }

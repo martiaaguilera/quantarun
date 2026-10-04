@@ -2,6 +2,26 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-04: The first live chaos runs found two defects
+**A heartbeating worker that never claims held its work forever.** Heartbeats renewed every unclaimed (ASSIGNED)
+attempt, on the reasoning that the worker had not seen it yet. That is true for a moment, because a worker with a
+free slot claims within 500 ms. It is not true for a worker whose intake is stuck while its heartbeat thread lives.
+In the live STOP_CLAIMING run, two jobs placed on such a worker sat unclaimed for 27 s and moved only when claiming
+resumed. With a stuck claim loop they would never have moved. Unclaimed assignments are now renewed only for
+`quantarun.workers.claim-timeout` (30 s) after placement. Then the lease runs out and the reaper recovers them like
+any lost attempt (I19). 30 s is longer than the worst legitimate gap, a worker whose free-slot count lags because
+it is retrying a report (5 tries, at most about 25 s). The live rerun released the assignment after 42.6 s.
+
+**Latency skipped the reports.** NETWORK_LATENCY delayed heartbeats and claims but not reports. The injector waited
+with `LockSupport.parkNanos`, which returns at once when the thread holds an unpark permit. The attempt threads did:
+the HTTP client and the virtual-thread scheduler unpark threads as part of their own work. It now uses
+`Thread.sleep`. An interrupt still ends the wait early and stays set. `ChaosInjectorTest` holds a pending permit to
+keep this fixed.
+
+**Design note: faults are pulled, not pushed (ADR-0007).** The control plane never calls a worker, so a fault rides
+the worker's own heartbeat response. A worker that did not opt in ignores it, and there is no inbound "break
+yourself" endpoint to secure.
+
 ## 2026-10-02 — now() is when a transaction began, not when its writes happened
 `CheckpointTest.checkpointRacingLeaseRecovery_isNeverCommittedByARecoveredAttempt` failed once in a full run. A
 checkpoint had been committed, yet its `committed_at` was later than the recovered attempt's `finished_at`. The

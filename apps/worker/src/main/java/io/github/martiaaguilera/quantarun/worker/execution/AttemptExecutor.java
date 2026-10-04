@@ -4,6 +4,7 @@ import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.AttemptOutcome;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
 import io.github.martiaaguilera.quantarun.worker.Backoff;
+import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
 import java.time.Clock;
 import java.time.Duration;
@@ -11,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -78,6 +80,7 @@ public class AttemptExecutor implements AutoCloseable {
     }
 
     private final ControlPlaneClient controlPlane;
+    private final ChaosInjector chaos;
     private final int slots;
     private final ReportPolicy reportPolicy;
     private final RandomGenerator random;
@@ -94,15 +97,17 @@ public class AttemptExecutor implements AutoCloseable {
             int slots,
             ReportPolicy reportPolicy,
             HttpSettings http,
+            ChaosInjector chaos,
             RandomGenerator random) {
         this.controlPlane = controlPlane;
+        this.chaos = chaos;
         this.slots = slots;
         this.reportPolicy = reportPolicy;
         this.random = random;
         this.workloads = Stream.of(
                         new DelayWorkload(),
                         new CpuHashWorkload(),
-                        new MockInferenceWorkload(),
+                        new MockInferenceWorkload(chaos),
                         new FailWorkload(),
                         new MemoryWorkload(),
                         new StagedWorkload(),
@@ -213,6 +218,10 @@ public class AttemptExecutor implements AutoCloseable {
                     assignment.lastCheckpoint(),
                     (stage, stageResult) -> commitCheckpoint(attempt, stage, stageResult));
             try {
+                if (chaos.takeStall()) {
+                    // STALL_ATTEMPTS chaos: hang until the attempt's own timeout interrupts this thread.
+                    new CountDownLatch(1).await();
+                }
                 result = workload(assignment.workloadType()).execute(new Payload(assignment.payload()), context);
             } catch (InterruptedException e) {
                 interrupted = true;
