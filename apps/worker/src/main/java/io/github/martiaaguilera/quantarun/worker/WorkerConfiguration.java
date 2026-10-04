@@ -3,6 +3,11 @@ package io.github.martiaaguilera.quantarun.worker;
 import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
 import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
+import io.github.martiaaguilera.quantarun.worker.execution.AttemptTelemetry;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.random.RandomGenerator;
@@ -45,7 +50,14 @@ class WorkerConfiguration {
 
     /** One execution slot per declared slot: the control plane reserves exactly this many. */
     @Bean(destroyMethod = "close")
-    AttemptExecutor attemptExecutor(ControlPlaneClient client, WorkerSettings settings, ChaosInjector chaos) {
+    AttemptExecutor attemptExecutor(
+            ControlPlaneClient client,
+            WorkerSettings settings,
+            ChaosInjector chaos,
+            Tracer tracer,
+            Propagator propagator,
+            ObservationRegistry observations,
+            MeterRegistry meters) {
         return new AttemptExecutor(
                 client,
                 settings.capacity().slots(),
@@ -53,6 +65,7 @@ class WorkerConfiguration {
                         settings.reportAttempts(), Duration.ofMillis(200), Duration.ofSeconds(5)),
                 new AttemptExecutor.HttpSettings(settings.httpAllowedPrivateAddresses(), settings.connectTimeout()),
                 chaos,
+                new AttemptTelemetry(tracer, propagator, observations, meters),
                 RandomGenerator.getDefault());
     }
 

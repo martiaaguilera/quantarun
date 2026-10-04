@@ -15,7 +15,7 @@ import org.springframework.test.context.ActiveProfiles;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, CollectedSpans.class})
 public @interface IntegrationTest {
 
     String ADMIN_TOKEN = "test-admin-token-0123456789abcdef0123";

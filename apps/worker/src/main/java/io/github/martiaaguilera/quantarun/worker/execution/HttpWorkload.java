@@ -54,9 +54,11 @@ final class HttpWorkload implements Workload {
     private final InetAddressFilter allowedTargets;
     private final Duration connectTimeout;
     private final Clock clock;
+    private final ProviderCalls providerCalls;
 
     /** @param allowedPrivateAddresses IPs or CIDR ranges allowed despite being internal, for local demos and tests. */
-    HttpWorkload(List<String> allowedPrivateAddresses, Duration connectTimeout, Clock clock) {
+    HttpWorkload(
+            List<String> allowedPrivateAddresses, Duration connectTimeout, Clock clock, ProviderCalls providerCalls) {
         var filter = InetAddressFilter.externalAddresses();
         if (!allowedPrivateAddresses.isEmpty()) {
             filter = filter.or(allowedPrivateAddresses.toArray(String[]::new));
@@ -64,6 +66,7 @@ final class HttpWorkload implements Workload {
         this.allowedTargets = filter;
         this.connectTimeout = connectTimeout;
         this.clock = clock;
+        this.providerCalls = providerCalls;
     }
 
     @Override
@@ -85,7 +88,7 @@ final class HttpWorkload implements Workload {
                         .withRedirects(HttpRedirects.DONT_FOLLOW)
                         .withInetAddressFilter(allowedTargets));
         try {
-            return call(factory, uri, method);
+            return providerCalls.observe(type(), () -> call(factory, uri, method));
         } finally {
             close(factory);
         }

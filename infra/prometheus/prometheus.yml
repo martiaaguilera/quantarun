@@ -1,0 +1,14 @@
+# Scrapes every QuantaRun process in the compose stack (docker-compose.observability.yml).
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: control-plane
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["control-plane:8080"]
+  - job_name: workers
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["worker-cpu:8081", "worker-mixed:8081", "worker-accel:8081"]

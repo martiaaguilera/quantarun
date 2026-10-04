@@ -14,6 +14,12 @@ import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.ChaosFault;
 import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.observation.DefaultMeterObservationHandler;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
@@ -41,6 +47,8 @@ class AttemptExecutorTest {
 
     private MockRestServiceServer server;
     private final ChaosInjector chaos = new ChaosInjector(true, Clock.systemUTC(), () -> {});
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+    private final AttemptTelemetry telemetry = telemetryRecordingTo(meters);
     private AttemptExecutor executor;
 
     @BeforeEach
@@ -53,6 +61,7 @@ class AttemptExecutorTest {
                 new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
                 new AttemptExecutor.HttpSettings(List.of(), Duration.ofSeconds(1)),
                 chaos,
+                telemetry,
                 RandomGenerator.of("L64X128MixRandom"));
     }
 
@@ -189,6 +198,52 @@ class AttemptExecutorTest {
         assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
 
         server.verify();
+    }
+
+    /** The provider error rate comes from these timers: one per call, tagged with the outcome's failure class. */
+    @Test
+    void providerCalls_andAttempts_areMeasuredByOutcome() throws Exception {
+        chaos.apply(List.of(directive(ChaosFault.PROVIDER_ERROR, 1, 0)));
+        var payload = Map.<String, Object>of("inputTokens", 10, "outputTokens", 10, "latencyMs", 0);
+        var failing = assignment("mock-inference", payload, 30);
+        var succeeding = assignment("mock-inference", payload, 30);
+        expectReport(failing).andRespond(accepted(failing, "RETRY_WAIT"));
+        expectReport(succeeding).andRespond(accepted(succeeding, "SUCCEEDED"));
+
+        executor.start(failing, SECRET);
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        executor.start(succeeding, SECRET);
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+
+        assertThat(providerCalls("transient")).isEqualTo(1);
+        assertThat(providerCalls("success")).isEqualTo(1);
+        assertThat(meters.get("quantarun.worker.attempts")
+                        .tag("workload_type", "mock-inference")
+                        .tag("stop", "COMPLETED")
+                        .timer()
+                        .count())
+                .isEqualTo(2);
+        assertThat(meters.get("quantarun.worker.slots").gauge().value()).isEqualTo(2);
+        assertThat(meters.get("quantarun.worker.slots.busy").gauge().value()).isZero();
+        server.verify();
+    }
+
+    private long providerCalls(String outcome) {
+        return meters.get("quantarun.worker.provider.call")
+                .tag("workload_type", "mock-inference")
+                .tag("outcome", outcome)
+                .timer()
+                .count();
+    }
+
+    static ObservationRegistry observationsRecordingTo(MeterRegistry meters) {
+        var registry = ObservationRegistry.create();
+        registry.observationConfig().observationHandler(new DefaultMeterObservationHandler(meters));
+        return registry;
+    }
+
+    private static AttemptTelemetry telemetryRecordingTo(MeterRegistry meters) {
+        return new AttemptTelemetry(Tracer.NOOP, Propagator.NOOP, observationsRecordingTo(meters), meters);
     }
 
     private static WorkerProtocol.ChaosDirective directive(ChaosFault fault, int count, long retryAfterMillis) {
@@ -361,6 +416,6 @@ class AttemptExecutorTest {
 
     private static WorkerProtocol.Assignment assignment(String type, Map<String, Object> payload, int timeoutSeconds) {
         return new WorkerProtocol.Assignment(
-                UUID.randomUUID(), UUID.randomUUID(), 1, type, payload, timeoutSeconds, null);
+                UUID.randomUUID(), UUID.randomUUID(), 1, type, payload, timeoutSeconds, null, null);
     }
 }

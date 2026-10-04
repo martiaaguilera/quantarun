@@ -43,4 +43,22 @@ class WorkersConfiguration {
             registry.retireSilentWorkers();
         }
     }
+
+    /** Off in tests, which refresh the gauges themselves when they assert on them. */
+    @Configuration(proxyBeanMethods = false)
+    @EnableScheduling
+    @ConditionalOnProperty(name = "quantarun.metrics.gauges-enabled", matchIfMissing = true)
+    static class FleetGaugeRefresher {
+
+        private final FleetGauges gauges;
+
+        FleetGaugeRefresher(FleetGauges gauges) {
+            this.gauges = gauges;
+        }
+
+        @Scheduled(fixedDelayString = "${quantarun.metrics.gauge-refresh-interval:10s}")
+        void refresh() {
+            gauges.refresh();
+        }
+    }
 }

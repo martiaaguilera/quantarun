@@ -127,6 +127,8 @@ public final class WorkerProtocol {
      * @param attemptId the fencing token for every later call about this execution.
      * @param lastCheckpoint the job's last committed stage, for a staged workload to resume after; null when there is
      *     none (the attempt starts from zero).
+     * @param traceParent W3C trace context of the placement, so the worker's spans join the job's trace; null when the
+     *     control plane recorded none.
      */
     public record Assignment(
             UUID attemptId,
@@ -135,7 +137,8 @@ public final class WorkerProtocol {
             String workloadType,
             Map<String, Object> payload,
             int timeoutSeconds,
-            Checkpoint lastCheckpoint) {}
+            Checkpoint lastCheckpoint,
+            String traceParent) {}
 
     /** A committed stage result. Stages are numbered from 0 and committed strictly in order. */
     public record Checkpoint(int stageIndex, Map<String, Object> result) {}

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import io.github.martiaaguilera.quantarun.controlplane.IntegrationTest;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +27,9 @@ class SchedulerLoopTest {
 
     @Autowired
     JdbcClient jdbc;
+
+    @Autowired
+    MeterRegistry meters;
 
     @BeforeEach
     void emptyQueueAndFleet() {
@@ -52,7 +56,7 @@ class SchedulerLoopTest {
                         VALUES (:p, 'delay', '{}', 'QUEUED', 500, 256, 3, 60) RETURNING id
                         """).param("p", project).query(UUID.class).single();
 
-        var loop = new SchedulerLoop(cycle, properties);
+        var loop = new SchedulerLoop(cycle, properties, meters);
         loop.start();
         try {
             await().atMost(Duration.ofSeconds(10))

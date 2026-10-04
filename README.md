@@ -4,7 +4,7 @@ A local-first control plane for scheduling, executing, recovering, replaying and
 workloads. It uses PostgreSQL for coordination and OpenTelemetry for visibility, and runs at zero cost with no
 API keys.
 
-> **Status: early development (Phase 9 of 15).** Implemented so far: the job API with a centrally enforced state
+> **Status: early development (Phase 10 of 15).** Implemented so far: the job API with a centrally enforced state
 > machine, idempotent submission (proven with 500 concurrent duplicates on real PostgreSQL), cooperative
 > cancellation, project-scoped API keys and OpenAPI. On the fleet side: three heterogeneous workers that register with
 > per-worker credentials, heartbeat, drain and deregister; silent ones are retired, with a grace period after a
@@ -20,7 +20,9 @@ API keys.
 > ([docs/SCHEDULER.md](docs/SCHEDULER.md)). A deterministic simulator replays eight scenarios through the same planner
 > and compares the policies; the same seed gives the same result hash ([docs/SIMULATION.md](docs/SIMULATION.md)). An
 > operator can inject eight predefined faults into the workers (crash, silence, stuck intake, latency, stalls, provider
-> 429/500/garbage) and read the recovery timeline ([docs/CHAOS.md](docs/CHAOS.md)). Observability and the console come
+> 429/500/garbage) and read the recovery timeline ([docs/CHAOS.md](docs/CHAOS.md)). Every job is one OpenTelemetry trace
+> across the control plane and the worker, with Prometheus metrics and correlated structured logs; Jaeger and
+> Prometheus come as an optional compose overlay ([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)). The console comes
 > next. This README only describes what exists.
 
 ## What it will be
@@ -45,6 +47,9 @@ cp .env.example .env
 docker compose up --build --wait
 # Web console:            http://localhost:3000
 # Control-plane health:   http://localhost:8080/actuator/health
+
+# With traces (Jaeger, http://localhost:16686) and metrics (Prometheus, http://localhost:9090):
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build --wait
 ```
 
 ## Development

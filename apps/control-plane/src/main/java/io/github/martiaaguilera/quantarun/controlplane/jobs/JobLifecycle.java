@@ -46,11 +46,16 @@ public class JobLifecycle {
     private final JobRepository jobs;
     private final JobEventRepository events;
     private final Projects projects;
+    private final JobTracing tracing;
+    private final JobMetrics metrics;
 
-    JobLifecycle(JobRepository jobs, JobEventRepository events, Projects projects) {
+    JobLifecycle(
+            JobRepository jobs, JobEventRepository events, Projects projects, JobTracing tracing, JobMetrics metrics) {
         this.jobs = jobs;
         this.events = events;
         this.projects = projects;
+        this.tracing = tracing;
+        this.metrics = metrics;
     }
 
     /**
@@ -65,9 +70,11 @@ public class JobLifecycle {
             return replay;
         }
 
-        var inserted = jobs.insertIfAbsent(projectId, submission, idempotencyKey, requestHash);
+        var inserted =
+                jobs.insertIfAbsent(projectId, submission, idempotencyKey, requestHash, tracing.currentTraceParent());
         if (inserted.isPresent()) {
             var job = inserted.get();
+            metrics.submitted(job.workloadType());
             events.append(
                     job.id(),
                     null,
@@ -173,9 +180,12 @@ public class JobLifecycle {
     @Transactional
     public CancelOutcome cancel(UUID jobId) {
         for (int attempt = 0; attempt < CANCEL_ATTEMPTS; attempt++) {
-            if (jobs.transition(jobId, List.of(JobStatus.QUEUED, JobStatus.RETRY_WAIT), JobStatus.CANCELLED)
-                    .isPresent()) {
+            var cancelled =
+                    jobs.transition(jobId, List.of(JobStatus.QUEUED, JobStatus.RETRY_WAIT), JobStatus.CANCELLED);
+            if (cancelled.isPresent()) {
                 events.append(jobId, null, JobEventType.CANCELLED, Map.of("reason", "cancel requested by client"));
+                var job = cancelled.get();
+                metrics.finished(job, JobStatus.CANCELLED, job.updatedAt());
                 return CancelOutcome.CANCELLED;
             }
             if (jobs.requestCancellation(jobId).isPresent()) {

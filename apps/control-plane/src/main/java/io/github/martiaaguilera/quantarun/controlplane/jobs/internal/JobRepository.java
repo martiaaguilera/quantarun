@@ -28,7 +28,7 @@ public class JobRepository {
             id, project_id, workload_type, payload, status, priority, cpu_millis, memory_mib, accelerators,
             required_labels, max_attempts, attempt_count, budget_start, revive_count, timeout_seconds, available_at, deadline_at,
             idempotency_key, cancel_requested_at, scheduling_outcome, scheduling_reason, created_at, updated_at,
-            finished_at
+            finished_at, trace_parent
             """;
 
     public record ListFilter(
@@ -53,14 +53,18 @@ public class JobRepository {
      * own transaction the way a plain INSERT plus a caught unique violation would. Returns empty when the key existed.
      */
     public Optional<Job> insertIfAbsent(
-            UUID projectId, JobSubmission submission, @Nullable String idempotencyKey, byte @Nullable [] requestHash) {
+            UUID projectId,
+            JobSubmission submission,
+            @Nullable String idempotencyKey,
+            byte @Nullable [] requestHash,
+            @Nullable String traceParent) {
         return jdbc.sql("""
                         INSERT INTO jobs (project_id, workload_type, payload, status, priority, cpu_millis,
                                           memory_mib, accelerators, required_labels, max_attempts, timeout_seconds,
-                                          available_at, deadline_at, idempotency_key, request_hash)
+                                          available_at, deadline_at, idempotency_key, request_hash, trace_parent)
                         VALUES (:projectId, :workloadType, CAST(:payload AS jsonb), 'QUEUED', :priority,
                                 :cpuMillis, :memoryMib, :accelerators, :labels, :maxAttempts, :timeoutSeconds,
-                                coalesce(:notBefore, now()), :deadline, :idempotencyKey, :requestHash)
+                                coalesce(:notBefore, now()), :deadline, :idempotencyKey, :requestHash, :traceParent)
                         ON CONFLICT (project_id, idempotency_key) DO NOTHING
                         RETURNING
                         """ + COLUMNS)
@@ -78,6 +82,7 @@ public class JobRepository {
                 .param("deadline", timestamp(submission.deadline()))
                 .param("idempotencyKey", idempotencyKey)
                 .param("requestHash", requestHash)
+                .param("traceParent", traceParent)
                 .query(jobMapper)
                 .optional();
     }
@@ -302,7 +307,8 @@ public class JobRepository {
                 rs.getString("scheduling_reason"),
                 instant(rs, "created_at"),
                 instant(rs, "updated_at"),
-                instant(rs, "finished_at"));
+                instant(rs, "finished_at"),
+                rs.getString("trace_parent"));
     }
 
     static @Nullable Instant instant(ResultSet rs, String column) throws SQLException {

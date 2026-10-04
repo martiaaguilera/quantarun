@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sun.net.httpserver.HttpServer;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -31,9 +32,12 @@ class HttpWorkloadTest {
     private HttpServer server;
     private int port;
     private final AtomicInteger hits = new AtomicInteger();
-    private final HttpWorkload guarded = new HttpWorkload(List.of(), Duration.ofSeconds(1), Clock.systemUTC());
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+    private final ProviderCalls providerCalls = new ProviderCalls(AttemptExecutorTest.observationsRecordingTo(meters));
+    private final HttpWorkload guarded =
+            new HttpWorkload(List.of(), Duration.ofSeconds(1), Clock.systemUTC(), providerCalls);
     private final HttpWorkload allowingLoopback =
-            new HttpWorkload(List.of("127.0.0.1/32"), Duration.ofSeconds(1), Clock.systemUTC());
+            new HttpWorkload(List.of("127.0.0.1/32"), Duration.ofSeconds(1), Clock.systemUTC(), providerCalls);
 
     @BeforeEach
     void startServer() throws IOException {

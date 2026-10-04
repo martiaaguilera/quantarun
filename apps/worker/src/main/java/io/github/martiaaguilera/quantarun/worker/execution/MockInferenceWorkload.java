@@ -25,9 +25,11 @@ final class MockInferenceWorkload implements Workload {
     private static final int PREVIEW_TOKENS = 8;
 
     private final ChaosInjector chaos;
+    private final ProviderCalls providerCalls;
 
-    MockInferenceWorkload(ChaosInjector chaos) {
+    MockInferenceWorkload(ChaosInjector chaos, ProviderCalls providerCalls) {
         this.chaos = chaos;
+        this.providerCalls = providerCalls;
     }
 
     @Override
@@ -42,33 +44,36 @@ final class MockInferenceWorkload implements Workload {
         var latencyMs = payload.requireLong("latencyMs", 0, MAX_LATENCY_MS);
         var seed = payload.optionalLong("seed", Long.MIN_VALUE, Long.MAX_VALUE).orElse(0L);
 
-        Thread.sleep(latencyMs);
-        chaos.takeProviderFault().ifPresent(fault -> {
-            throw providerFailure(fault);
-        });
+        // The whole fake round trip is the provider call: its latency, a chaos fault if one is due, and the answer.
+        return providerCalls.observe(type(), () -> {
+            Thread.sleep(latencyMs);
+            chaos.takeProviderFault().ifPresent(fault -> {
+                throw providerFailure(fault);
+            });
 
-        // The prompt size feeds the seed, so two requests that differ only in input size answer differently.
-        var random = new SplittableRandom(seed ^ (inputTokens * 0x9E3779B97F4A7C15L));
-        var digest = sha256();
-        var preview = new ArrayList<Integer>(PREVIEW_TOKENS);
-        var buffer = ByteBuffer.allocate(Integer.BYTES);
-        for (long i = 0; i < outputTokens; i++) {
-            var token = random.nextInt(VOCABULARY_SIZE);
-            if (preview.size() < PREVIEW_TOKENS) {
-                preview.add(token);
+            // The prompt size feeds the seed, so two requests that differ only in input size answer differently.
+            var random = new SplittableRandom(seed ^ (inputTokens * 0x9E3779B97F4A7C15L));
+            var digest = sha256();
+            var preview = new ArrayList<Integer>(PREVIEW_TOKENS);
+            var buffer = ByteBuffer.allocate(Integer.BYTES);
+            for (long i = 0; i < outputTokens; i++) {
+                var token = random.nextInt(VOCABULARY_SIZE);
+                if (preview.size() < PREVIEW_TOKENS) {
+                    preview.add(token);
+                }
+                digest.update(buffer.clear().putInt(token).array());
             }
-            digest.update(buffer.clear().putInt(token).array());
-        }
 
-        var result = new LinkedHashMap<String, Object>();
-        result.put("model", "mock");
-        result.put("inputTokens", inputTokens);
-        result.put("outputTokens", outputTokens);
-        result.put("totalTokens", inputTokens + outputTokens);
-        result.put("latencyMs", latencyMs);
-        result.put("outputDigest", HexFormat.of().formatHex(digest.digest()));
-        result.put("previewTokenIds", preview);
-        return result;
+            var result = new LinkedHashMap<String, Object>();
+            result.put("model", "mock");
+            result.put("inputTokens", inputTokens);
+            result.put("outputTokens", outputTokens);
+            result.put("totalTokens", inputTokens + outputTokens);
+            result.put("latencyMs", latencyMs);
+            result.put("outputDigest", HexFormat.of().formatHex(digest.digest()));
+            result.put("previewTokenIds", preview);
+            return result;
+        });
     }
 
     /**
