@@ -20,6 +20,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -151,9 +152,9 @@ class CheckpointTest {
     }
 
     /**
-     * A checkpoint racing the reaper's recovery of the same attempt, many times: whichever takes the attempt's row lock
-     * first wins. A checkpoint is either committed while the attempt still ran (committed before it was finished) or
-     * rejected because it no longer ran; never committed by an attempt that was already recovered.
+     * A checkpoint racing the expiry of the attempt's lease and the reaper's recovery, many times. A checkpoint is
+     * either committed while the lease was held (and before the attempt was finished) or refused, because the lease had
+     * expired or the attempt was already recovered; never committed by an attempt whose lease had run out.
      */
     @Test
     void checkpointRacingLeaseRecovery_isNeverCommittedByARecoveredAttempt() throws Exception {
@@ -166,19 +167,26 @@ class CheckpointTest {
             fixture.place();
             attempt = fixture.latestAttempt(job);
             attempts.claim(worker.id(), 1);
-            fixture.expireLease(attempt);
 
             var start = new CountDownLatch(1);
             var futures = new ArrayList<Future<?>>();
             JobAttempts.CheckpointResult[] result = new JobAttempts.CheckpointResult[1];
-            try (var executor = Executors.newFixedThreadPool(2)) {
+            try (var executor = Executors.newFixedThreadPool(3)) {
                 futures.add(executor.submit(() -> {
                     start.await();
+                    Thread.sleep(ThreadLocalRandom.current().nextInt(3));
                     result[0] = attempts.commitCheckpoint(worker.id(), attempt, 0, Map.of("digest", "a"));
                     return null;
                 }));
                 futures.add(executor.submit(() -> {
                     start.await();
+                    Thread.sleep(ThreadLocalRandom.current().nextInt(3));
+                    fixture.expireLease(attempt);
+                    return null;
+                }));
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    Thread.sleep(ThreadLocalRandom.current().nextInt(4));
                     attempts.recoverExpiredLeases(10);
                     return null;
                 }));
@@ -188,7 +196,9 @@ class CheckpointTest {
                 }
             }
 
-            // A reaper that found the attempt locked by the checkpoint skipped it (SKIP LOCKED); the next tick gets it.
+            // A reaper that found the attempt locked by the checkpoint skipped it (SKIP LOCKED), or ran before the
+            // expiry; the next tick gets it.
+            fixture.expireLease(attempt);
             attempts.recoverExpiredLeases(10);
             assertThat(fixture.attemptStatus(attempt)).isEqualTo("LOST");
             var committed = count("SELECT count(*) FROM job_checkpoints");
@@ -206,7 +216,10 @@ class CheckpointTest {
                         .isEqualTo(1);
                 committedWins++;
             } else {
-                assertThat(result[0]).isInstanceOf(JobAttempts.CheckpointResult.NotActive.class);
+                assertThat(result[0])
+                        .isInstanceOfAny(
+                                JobAttempts.CheckpointResult.NotActive.class,
+                                JobAttempts.CheckpointResult.LeaseExpired.class);
                 assertThat(committed).isZero();
                 recoveredFirst++;
             }

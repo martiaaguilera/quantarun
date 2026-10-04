@@ -13,6 +13,7 @@ import io.github.martiaaguilera.quantarun.controlplane.jobs.JobLifecycle;
 import io.github.martiaaguilera.quantarun.controlplane.scheduler.SchedulingCycle;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerRegistry;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -183,6 +184,32 @@ class WorkerExecutionApiTest {
         report(worker, attempt, "{\"outcome\":\"SUCCEEDED\"}")
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ATTEMPT_NOT_ACTIVE"));
+        assertThat(fixture.attemptStatus(attempt)).isEqualTo("LOST");
+        assertThat(fixture.jobStatus(job)).isEqualTo("RETRY_WAIT");
+        assertThat(fixture.eventCount(job, "SUCCEEDED")).isZero();
+    }
+
+    /**
+     * Between a lease's expiry and the reaper's next pass, the attempt is still RUNNING in the table, but the heartbeat
+     * already calls it lost. The report must agree with the heartbeat, or a worker could finish work it was told to
+     * abandon. Accepting it was harmless for I6, yet it gave two answers to who owns the attempt (found by
+     * ConcurrencyTortureTest).
+     */
+    @Test
+    void report_afterLeaseExpiry_beforeRecovery_isFencedWith409() throws Exception {
+        var worker = fixture.worker("slow", 1);
+        var job = fixture.submit(3);
+        fixture.place();
+        var attempt = fixture.latestAttempt(job);
+        claim(worker, 1);
+        fixture.expireLease(attempt);
+
+        assertThat(attempts.renewLeases(worker.id(), List.of(attempt)).lost()).containsExactly(attempt);
+        report(worker, attempt, "{\"outcome\":\"SUCCEEDED\"}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("LEASE_EXPIRED"));
+
+        assertThat(attempts.recoverExpiredLeases(10)).isEqualTo(1);
         assertThat(fixture.attemptStatus(attempt)).isEqualTo("LOST");
         assertThat(fixture.jobStatus(job)).isEqualTo("RETRY_WAIT");
         assertThat(fixture.eventCount(job, "SUCCEEDED")).isZero();

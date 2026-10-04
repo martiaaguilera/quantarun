@@ -126,6 +126,11 @@ class ExecutionController {
                         HttpStatus.CONFLICT,
                         "ATTEMPT_NOT_CLAIMED",
                         "Attempt " + id + " was never claimed, so it has no outcome to report.");
+            case JobAttempts.ReportResult.LeaseExpired(var id) ->
+                throw new ApiException(
+                        HttpStatus.CONFLICT,
+                        "LEASE_EXPIRED",
+                        "The lease of attempt " + id + " expired before this report; the attempt is being recovered.");
         };
     }
 
@@ -161,6 +166,11 @@ class ExecutionController {
                         HttpStatus.CONFLICT,
                         "ATTEMPT_NOT_ACTIVE",
                         "Attempt " + attemptId + " is " + status + "; only a running attempt can commit checkpoints.");
+            case JobAttempts.CheckpointResult.LeaseExpired(var id) ->
+                throw new ApiException(
+                        HttpStatus.CONFLICT,
+                        "LEASE_EXPIRED",
+                        "The lease of attempt " + id + " expired; it can no longer commit checkpoints.");
             case JobAttempts.CheckpointResult.NotFound(var id) ->
                 throw new ApiException(
                         HttpStatus.NOT_FOUND,

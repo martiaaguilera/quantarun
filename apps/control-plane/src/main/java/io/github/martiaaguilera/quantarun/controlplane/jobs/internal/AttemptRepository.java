@@ -147,6 +147,17 @@ public class AttemptRepository {
                         """).param("id", attemptId).query(this::mapLocked).optional();
     }
 
+    /**
+     * Whether the attempt's lease is still held, by the database clock, as claim and renewal judge it. Asked after the
+     * row is locked, so no renewal or recovery can change the answer before the caller's transaction ends.
+     */
+    public boolean leaseHeld(UUID attemptId) {
+        return jdbc.sql("SELECT lease_expires_at > now() FROM job_attempts WHERE id = :id")
+                .param("id", attemptId)
+                .query(Boolean.class)
+                .single();
+    }
+
     private LockedAttempt mapLocked(ResultSet rs, int row) throws SQLException {
         return new LockedAttempt(
                 rs.getObject("id", UUID.class),
