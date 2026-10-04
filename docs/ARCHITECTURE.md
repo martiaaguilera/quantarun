@@ -45,10 +45,11 @@ Packages under `io.github.martiaaguilera.quantarun`, verified by Spring Modulith
 | `scheduler.policy` | **pure** policies (no Spring, no SQL); shared with `simulation` |
 | `reliability` | the lease reaper (retry decisions live with the attempt-ending transaction in `jobs`) |
 | `simulation` | scenarios, trace generation, the discrete-event engine, metrics |
+| `console` | read models for the console that span modules: the overview (jobs and fleet) and the effective settings |
 | `chaos` | the fault catalogue, experiments, their delivery to workers in heartbeat responses, and recovery timelines |
 | `web` | cross-cutting HTTP concerns: Problem Details, security filter, SSE |
 
-Allowed dependencies point inward: `scheduler → jobs, workers, projects`; `execution → jobs, workers, chaos`; `chaos → jobs, workers`; `reliability → jobs`; `jobs → workers`;
+Allowed dependencies point inward: `scheduler → jobs, workers, projects`; `execution → jobs, workers, chaos`; `chaos → jobs, workers`; `console → jobs, workers, scheduler, chaos, security`; `reliability → jobs`; `jobs → workers`;
 `simulation → scheduler::policy` (a named interface) and `jobs` (only the pure `RetryPolicy`). The policies depend on nothing except their own snapshot records.
 
 ## 3. Persistence
@@ -176,7 +177,27 @@ Details, the metric catalogue and measured examples are in `OBSERVABILITY.md`; b
 - **Logs:** Boot structured JSON (ECS) with `traceId`/`spanId`, and `jobId`, `attemptId`, `workerId`, `projectId` as
   fields.
 
-## 9. Development environment
+## 9. Operations console
+
+`apps/web` is a React 19 single-page app built by Vite and served by nginx, which proxies `/api`. It holds no state of
+its own beyond the credential (in `sessionStorage`, so it dies with the tab) and the trace-viewer URL template.
+
+- **Data:** TanStack Query over the REST API. Errors are Problem Details shown with the server's `detail`; a 401
+  signs the console out.
+- **Live updates:** `GET /api/v1/events/stream`. `EventSource` cannot send an `Authorization` header, so the client
+  reads the stream with `fetch` and parses it, reconnecting with jittered exponential backoff and `Last-Event-ID`.
+  Events do not patch cached data: they invalidate the affected queries (at most once a second), so the screen is
+  always what the API says.
+- **The stream on the server:** `JobEventStream` tails `job_events` by id. Identity ids are assigned at insert, not at
+  commit, so a lower id can become visible after a higher one. The tailer keeps a low watermark below which every id
+  has been either delivered or given up on: an id missing above the watermark is waited for up to
+  `quantarun.events.gap-timeout` (5 s) before it is treated as rolled back. Each subscriber has a bounded queue drained
+  by its own virtual thread; one that falls behind is disconnected, and resumes with `Last-Event-ID` (a replay of up
+  to 1,000 events, or a `reset` that tells the client to refetch).
+- **Job story:** the job page merges events, attempts, decisions and checkpoints into one ordered narrative and a
+  lifeline (one lane for the queue, one per attempt), so a retry or a lost lease reads as what happened, not as rows.
+
+## 10. Development environment
 
 The code is developed on the Windows host, with Docker Desktop on WSL2 running PostgreSQL, the
 Testcontainers databases and the compose stack (ADR-0006). CI runs on Linux, so Linux behaviour is

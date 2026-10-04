@@ -99,6 +99,43 @@ public class WorkerRegistry {
         return workers.findById(workerId).orElseThrow(() -> new WorkerNotFoundException(workerId));
     }
 
+    /** Live members by health, and what they offer and hold. The fleet is tens of workers, so it is summed here. */
+    public record Fleet(int healthy, int late, int draining, WorkerResources capacity, WorkerResources reserved) {}
+
+    public Fleet fleet() {
+        int healthy = 0;
+        int late = 0;
+        int draining = 0;
+        int cpu = 0, memory = 0, accelerators = 0, slots = 0;
+        int cpuReserved = 0, memoryReserved = 0, acceleratorsReserved = 0, slotsReserved = 0;
+        for (var worker : workers.findAll(null, 1_000)) {
+            if (!worker.lifecycle().isLive()) {
+                continue;
+            }
+            if (worker.lifecycle() == WorkerLifecycle.DRAINING) {
+                draining++;
+            } else if (worker.health(properties) == WorkerHealth.HEALTHY) {
+                healthy++;
+            } else {
+                late++;
+            }
+            cpu += worker.capacity().cpuMillis();
+            memory += worker.capacity().memoryMib();
+            accelerators += worker.capacity().accelerators();
+            slots += worker.capacity().slots();
+            cpuReserved += worker.reserved().cpuMillis();
+            memoryReserved += worker.reserved().memoryMib();
+            acceleratorsReserved += worker.reserved().accelerators();
+            slotsReserved += worker.reserved().slots();
+        }
+        return new Fleet(
+                healthy,
+                late,
+                draining,
+                new WorkerResources(cpu, memory, accelerators, slots),
+                new WorkerResources(cpuReserved, memoryReserved, acceleratorsReserved, slotsReserved));
+    }
+
     public Optional<Worker> find(UUID workerId) {
         return workers.findById(workerId);
     }

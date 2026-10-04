@@ -1,27 +1,21 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { createBrowserRouter, RouterProvider } from 'react-router'
-import { AppShell } from './layout/AppShell'
-import { OverviewPage } from './pages/OverviewPage'
+import { ApiError } from './api/client'
+import { Console } from './app/Console'
+import { SessionProvider } from './app/session'
 import './styles.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // Operational data goes stale quickly, but a failed poll should not flood a struggling control plane.
-      staleTime: 2_000,
-      retry: 2,
+      // The event stream marks what changed as stale; a short staleTime keeps navigation from refetching for nothing.
+      staleTime: 5_000,
+      // Only an unreachable control plane is worth retrying; an answered error (403, 404, 409) will answer the same.
+      retry: (failures, error) => failures < 2 && error instanceof ApiError && error.status === 0,
     },
   },
 })
-
-const router = createBrowserRouter([
-  {
-    element: <AppShell />,
-    children: [{ index: true, element: <OverviewPage /> }],
-  },
-])
 
 const rootElement = document.getElementById('root')
 if (!rootElement) {
@@ -31,7 +25,9 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <SessionProvider>
+        <Console />
+      </SessionProvider>
     </QueryClientProvider>
   </StrictMode>,
 )

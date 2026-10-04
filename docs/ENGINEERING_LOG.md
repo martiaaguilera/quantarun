@@ -2,6 +2,23 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-04: Tailing job_events by id loses late commits
+The first SSE design remembered the highest id sent and asked for `id > last`. Ids come from an identity sequence and
+are taken at insert, so a transaction that inserted id 41 and committed after the one holding id 42 was never sent.
+Under the scheduler's concurrent cycles this is normal, not rare. The tailer now keeps a low watermark and a set of
+ids already delivered above it; a gap is waited for up to 5 s and then treated as a rollback. A 5 s wait is far longer
+than any transaction here (they hold no I/O), and a gap that closes after it is still in the database for the job
+page. `anEventThatCommitsLate_isStillDelivered` fails against the naive version. Polling every 250 ms is cheaper than
+`LISTEN/NOTIFY` for this one reader and needs no connection held outside the pool.
+
+## 2026-10-04: Console charts: one hue per measure, labels that do not collide
+The policy lab shows five measures across six policies. A grouped chart with one colour per policy would need six
+categorical hues and a legend for every reading, so each measure is its own small chart with a single hue, the best
+policy labelled, and the exact numbers in a table under the charts. The first render had colliding axis labels
+(`LEAST_LOADED`, `BIN_PACKING`) and a clipped value label on the first bar; labels now wrap on a space and value
+labels are kept inside the plot. Categorical and status colours come from the validated palette, re-stepped for dark
+mode, and status always carries a label.
+
 ## 2026-10-04: Polling buried the job traces
 The first live run with Jaeger showed traces several times a second with the stack idle. The reaper and the liveness
 monitor are `@Scheduled`, and Spring observes every scheduled run. The workers claim every 500 ms and heartbeat

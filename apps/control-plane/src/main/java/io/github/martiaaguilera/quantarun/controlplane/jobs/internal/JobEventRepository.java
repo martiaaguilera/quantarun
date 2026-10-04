@@ -38,6 +38,40 @@ public class JobEventRepository {
                 .update();
     }
 
+    /** An event with the project it belongs to, so a stream can show each caller only its own. */
+    public record ProjectEvent(JobEvent event, UUID projectId) {}
+
+    /**
+     * Events after {@code afterId}, oldest first, across all jobs. Served by the primary key, so tailing the log costs
+     * one index range scan however large the table grows.
+     */
+    public List<ProjectEvent> findAfter(long afterId, int limit) {
+        return jdbc.sql("""
+                        SELECT e.id, e.job_id, e.attempt_id, e.type, e.occurred_at, e.details, j.project_id
+                        FROM job_events e JOIN jobs j ON j.id = e.job_id
+                        WHERE e.id > :afterId
+                        ORDER BY e.id LIMIT :limit
+                        """)
+                .param("afterId", afterId)
+                .param("limit", limit)
+                .query((rs, row) -> new ProjectEvent(
+                        new JobEvent(
+                                rs.getLong("id"),
+                                rs.getObject("job_id", UUID.class),
+                                rs.getObject("attempt_id", UUID.class),
+                                JobEventType.valueOf(rs.getString("type")),
+                                rs.getTimestamp("occurred_at").toInstant(),
+                                (ObjectNode) json.readTree(rs.getString("details"))),
+                        rs.getObject("project_id", UUID.class)))
+                .list();
+    }
+
+    public long maxId() {
+        return jdbc.sql("SELECT coalesce(max(id), 0) FROM job_events")
+                .query(Long.class)
+                .single();
+    }
+
     public List<JobEvent> findByJob(UUID jobId) {
         return jdbc.sql("""
                         SELECT id, job_id, attempt_id, type, occurred_at, details FROM job_events

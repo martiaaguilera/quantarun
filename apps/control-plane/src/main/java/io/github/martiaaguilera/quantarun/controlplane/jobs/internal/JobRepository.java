@@ -3,6 +3,7 @@ package io.github.martiaaguilera.quantarun.controlplane.jobs.internal;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.Job;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.JobStatus;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.JobSubmission;
+import io.github.martiaaguilera.quantarun.controlplane.jobs.JobSummary;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.ResourceRequest;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.WorkloadType;
 import java.sql.ResultSet;
@@ -31,9 +32,18 @@ public class JobRepository {
             finished_at, trace_parent
             """;
 
+    /**
+     * @param workerId jobs that had an attempt on this worker registration.
+     * @param createdFrom inclusive; {@code createdTo} exclusive.
+     */
     public record ListFilter(
             @Nullable UUID projectId,
             @Nullable JobStatus status,
+            @Nullable String workloadType,
+            @Nullable Integer priority,
+            @Nullable UUID workerId,
+            @Nullable Instant createdFrom,
+            @Nullable Instant createdTo,
             @Nullable UUID before,
             int limit) {}
 
@@ -88,6 +98,51 @@ public class JobRepository {
     }
 
     public record IdempotencyRecord(Job job, byte[] requestHash) {}
+
+    /**
+     * The overview's numbers in four short queries. The finished-in-the-last-hour counts scan {@code jobs}; fine for an
+     * overview refreshed every few seconds at this scale, and measured in Phase 13 if it is not.
+     */
+    public JobSummary summary(@Nullable UUID projectId) {
+        var scope = projectId == null ? "" : " AND j.project_id = :projectId";
+        var byStatus = new java.util.EnumMap<JobStatus, Long>(JobStatus.class);
+        for (var status : JobStatus.values()) {
+            byStatus.put(status, 0L);
+        }
+        bind(
+                        jdbc.sql("SELECT j.status, count(*) AS jobs FROM jobs j WHERE true" + scope
+                                + " GROUP BY j.status"),
+                        projectId)
+                .query(rs -> {
+                    byStatus.put(JobStatus.valueOf(rs.getString("status")), rs.getLong("jobs"));
+                });
+        var finished = bind(jdbc.sql("""
+                                SELECT count(*) FILTER (WHERE j.status = 'SUCCEEDED') AS succeeded,
+                                       count(*) FILTER (WHERE j.status = 'FAILED') AS failed,
+                                       count(*) FILTER (WHERE j.status = 'DEAD') AS dead
+                                FROM jobs j WHERE j.finished_at > now() - interval '1 hour'
+                                """ + scope), projectId)
+                .query((rs, row) -> new long[] {rs.getLong("succeeded"), rs.getLong("failed"), rs.getLong("dead")})
+                .single();
+        var retries = bind(jdbc.sql("""
+                                SELECT count(*) FROM job_attempts a JOIN jobs j ON j.id = a.job_id
+                                WHERE a.attempt_no > 1 AND a.assigned_at > now() - interval '1 hour'
+                                """ + scope), projectId).query(Long.class).single();
+        var p95 = bind(jdbc.sql("""
+                                SELECT percentile_cont(0.95) WITHIN GROUP (
+                                           ORDER BY extract(epoch FROM a.started_at - j.created_at))
+                                FROM job_attempts a JOIN jobs j ON j.id = a.job_id
+                                WHERE a.attempt_no = 1 AND a.started_at > now() - interval '15 minutes'
+                                """ + scope), projectId)
+                .query(Double.class)
+                .optional()
+                .orElse(null);
+        return new JobSummary(byStatus, finished[0], finished[1], finished[2], retries, p95);
+    }
+
+    private static JdbcClient.StatementSpec bind(JdbcClient.StatementSpec statement, @Nullable UUID projectId) {
+        return projectId == null ? statement : statement.param("projectId", projectId);
+    }
 
     public Optional<IdempotencyRecord> findByIdempotencyKey(UUID projectId, String idempotencyKey) {
         return jdbc.sql("SELECT " + COLUMNS + ", request_hash FROM jobs"
@@ -205,6 +260,22 @@ public class JobRepository {
         if (filter.status() != null) {
             sql.append(" AND status = :status");
         }
+        if (filter.workloadType() != null) {
+            sql.append(" AND workload_type = :workloadType");
+        }
+        if (filter.priority() != null) {
+            sql.append(" AND priority = :priority");
+        }
+        if (filter.workerId() != null) {
+            sql.append(
+                    " AND EXISTS (SELECT 1 FROM job_attempts a WHERE a.job_id = jobs.id AND a.worker_id = :workerId)");
+        }
+        if (filter.createdFrom() != null) {
+            sql.append(" AND created_at >= :createdFrom");
+        }
+        if (filter.createdTo() != null) {
+            sql.append(" AND created_at < :createdTo");
+        }
         if (filter.before() != null) {
             sql.append(" AND id < :before");
         }
@@ -216,6 +287,21 @@ public class JobRepository {
         }
         if (filter.status() != null) {
             statement = statement.param("status", filter.status().name());
+        }
+        if (filter.workloadType() != null) {
+            statement = statement.param("workloadType", filter.workloadType());
+        }
+        if (filter.priority() != null) {
+            statement = statement.param("priority", filter.priority());
+        }
+        if (filter.workerId() != null) {
+            statement = statement.param("workerId", filter.workerId());
+        }
+        if (filter.createdFrom() != null) {
+            statement = statement.param("createdFrom", Timestamp.from(filter.createdFrom()));
+        }
+        if (filter.createdTo() != null) {
+            statement = statement.param("createdTo", Timestamp.from(filter.createdTo()));
         }
         if (filter.before() != null) {
             statement = statement.param("before", filter.before());
