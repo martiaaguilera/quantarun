@@ -7,6 +7,8 @@ quantarun:
     startup-grace: 0s
   reliability:
     lease-reaper-enabled: false
+    # Tests expire leases on purpose; LeaseContinuityTest drives its own instance with a settable clock.
+    lease-continuity-enabled: false
   scheduler:
     # Tests drive SchedulingCycle directly; background loops would race them.
     enabled: false

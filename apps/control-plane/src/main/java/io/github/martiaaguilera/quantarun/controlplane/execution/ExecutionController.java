@@ -2,6 +2,7 @@ package io.github.martiaaguilera.quantarun.controlplane.execution;
 
 import io.github.martiaaguilera.quantarun.controlplane.chaos.ChaosExperiments;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.JobAttempts;
+import io.github.martiaaguilera.quantarun.controlplane.jobs.LeaseContinuity;
 import io.github.martiaaguilera.quantarun.controlplane.web.ApiException;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerAuthenticationFilter;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerPrincipal;
@@ -35,12 +36,19 @@ class ExecutionController {
 
     private final WorkerRegistry registry;
     private final JobAttempts attempts;
+    private final LeaseContinuity continuity;
     private final ChaosExperiments chaos;
     private final JsonMapper json;
 
-    ExecutionController(WorkerRegistry registry, JobAttempts attempts, ChaosExperiments chaos, JsonMapper json) {
+    ExecutionController(
+            WorkerRegistry registry,
+            JobAttempts attempts,
+            LeaseContinuity continuity,
+            ChaosExperiments chaos,
+            JsonMapper json) {
         this.registry = registry;
         this.attempts = attempts;
+        this.continuity = continuity;
         this.chaos = chaos;
         this.json = json;
     }
@@ -55,6 +63,7 @@ class ExecutionController {
             @Valid @RequestBody WorkerProtocol.HeartbeatRequest request) {
         var workerId = principal.requireRegisteredWorker();
         var lifecycle = registry.heartbeat(workerId);
+        continuity.catchUp();
         var renewal = attempts.renewLeases(
                 workerId, request.activeAttemptIds().stream().distinct().toList());
         return new WorkerProtocol.HeartbeatResponse(
@@ -72,6 +81,7 @@ class ExecutionController {
             @Valid @RequestBody WorkerProtocol.ClaimRequest request) {
         var workerId = principal.requireRegisteredWorker();
         registry.requireLive(workerId);
+        continuity.catchUp();
         var assignments = attempts.claim(workerId, request.maxAssignments()).stream()
                 .map(claimed -> new WorkerProtocol.Assignment(
                         claimed.attemptId(),
@@ -99,6 +109,7 @@ class ExecutionController {
         requireConsistentFailureClass(request);
         registry.requireLive(workerId);
         var retryAfter = request.retryAfterMillis() == null ? null : Duration.ofMillis(request.retryAfterMillis());
+        continuity.catchUp();
         return switch (attempts.report(
                 workerId,
                 attemptId,
@@ -151,6 +162,7 @@ class ExecutionController {
                     "CHECKPOINT_TOO_LARGE",
                     "A checkpoint result may be at most " + JobAttempts.MAX_CHECKPOINT_BYTES + " bytes.");
         }
+        continuity.catchUp();
         return switch (attempts.commitCheckpoint(workerId, attemptId, request.stageIndex(), request.result())) {
             case JobAttempts.CheckpointResult.Committed(var stage) ->
                 new WorkerProtocol.CheckpointResponse(stage, false);

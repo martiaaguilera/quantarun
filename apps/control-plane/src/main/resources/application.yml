@@ -8,6 +8,9 @@ spring:
     password: ${QUANTARUN_DB_PASSWORD}
     hikari:
       maximum-pool-size: ${QUANTARUN_DB_POOL_SIZE:20}
+      # Hikari waits 30 s for a connection by default. With virtual threads every request then parks that long during
+      # a database outage and probes stall; failing in 3 s answers 503 and lets workers back off (ENGINEERING_LOG).
+      connection-timeout: ${QUANTARUN_DB_CONNECTION_TIMEOUT_MS:3000}
   flyway:
     locations: classpath:db/migration
   mvc:

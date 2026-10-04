@@ -140,6 +140,10 @@ public class AttemptRepository {
     }
 
     /** Row lock on one attempt. Every path that ends an attempt goes through here first (attempt, job, worker order). */
+    public void ping() {
+        jdbc.sql("SELECT 1").query(Integer.class).single();
+    }
+
     public Optional<LockedAttempt> lock(UUID attemptId) {
         return jdbc.sql("""
                         SELECT id, job_id, attempt_no, worker_id, status, cpu_millis, memory_mib, accelerators
@@ -234,10 +238,15 @@ public class AttemptRepository {
      * against the workers; a worker that really died still expires one lease duration later.
      */
     public int extendActiveLeases(Duration leaseDuration) {
+        // Locks in id order, like lease renewal, so the two can never deadlock (ENGINEERING_LOG, 2026-10-02).
         return jdbc.sql("""
-                        UPDATE job_attempts
-                        SET lease_expires_at = greatest(lease_expires_at, now() + make_interval(secs => :leaseSeconds))
-                        WHERE status IN ('ASSIGNED', 'RUNNING')
+                        WITH active AS (
+                            SELECT id FROM job_attempts WHERE status IN ('ASSIGNED', 'RUNNING') ORDER BY id FOR UPDATE
+                        )
+                        UPDATE job_attempts a
+                        SET lease_expires_at = greatest(a.lease_expires_at, now() + make_interval(secs => :leaseSeconds))
+                        FROM active
+                        WHERE a.id = active.id AND a.status IN ('ASSIGNED', 'RUNNING')
                         """)
                 .param("leaseSeconds", leaseDuration.toMillis() / 1000.0)
                 .update();

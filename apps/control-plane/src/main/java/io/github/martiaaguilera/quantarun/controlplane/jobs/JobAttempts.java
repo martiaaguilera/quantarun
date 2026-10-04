@@ -299,6 +299,11 @@ public class JobAttempts {
         return attempts.extendActiveLeases(workerProperties.leaseDuration());
     }
 
+    /** One round trip; throws while the database is unreachable. Used by {@link LeaseContinuity}. */
+    void confirmDatabaseReachable() {
+        attempts.ping();
+    }
+
     private JobStatus endAttempt(
             LockedAttempt attempt,
             AttemptStatus endStatus,

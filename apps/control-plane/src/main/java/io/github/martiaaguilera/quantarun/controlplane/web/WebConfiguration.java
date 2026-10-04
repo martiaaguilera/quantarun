@@ -11,6 +11,15 @@ import org.springframework.util.unit.DataSize;
 class WebConfiguration {
 
     @Bean
+    FilterRegistrationBean<DatabaseUnavailableFilter> databaseUnavailableFilter() {
+        var registration = new FilterRegistrationBean<>(new DatabaseUnavailableFilter());
+        registration.addUrlPatterns("/api/*", "/worker-api/*");
+        // Outermost, so it also covers the authentication filters' credential lookups.
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        return registration;
+    }
+
+    @Bean
     FilterRegistrationBean<RequestBodyLimitFilter> requestBodyLimitFilter(
             @Value("${quantarun.api.max-request-body:64KB}") DataSize maxRequestBody) {
         var registration = new FilterRegistrationBean<>(new RequestBodyLimitFilter(maxRequestBody.toBytes()));
