@@ -61,8 +61,8 @@ all DDL. The core tables (the authoritative definitions are the migrations under
 |---|---|
 | `projects` | `weight > 0`, quotas |
 | `api_keys` | `prefix` unique, `hash`, `revoked_at` |
-| `jobs` | `status` (CHECK in enum), `priority`, `available_at`, `deadline_at`, requirements as columns, `payload jsonb`, `max_attempts`, `attempt_count`, `cancel_requested_at`, `unique(project_id, idempotency_key)` |
-| `job_attempts` | `job_id`, `attempt_no`, `worker_id`, `status`, reservation columns, `lease_expires_at`, `failure_class`, `retry_decision`, `trace_id`; **partial unique index: one active attempt per job**; `unique(job_id, attempt_no)` |
+| `jobs` | `status` (CHECK in enum), `priority`, `available_at`, `deadline_at`, requirements as columns, `payload jsonb`, `max_attempts`, `attempt_count`, `cancel_requested_at`, `trace_parent` (W3C, CHECK), `unique(project_id, idempotency_key)` |
+| `job_attempts` | `job_id`, `attempt_no`, `worker_id`, `status`, reservation columns, `lease_expires_at`, `failure_class`, `retry_decision`, `trace_parent` (the placement span); **partial unique index: one active attempt per job**; `unique(job_id, attempt_no)` |
 | `workers` | capacity + `reserved_*` columns with `CHECK (0 <= reserved <= capacity)`, `lifecycle`, labels |
 | `worker_heartbeats` | `worker_id`, `last_seen_at`. **Split from `workers` on purpose** (see §4) |
 | `job_checkpoints` | `unique(job_id, stage_index)` |
@@ -119,8 +119,8 @@ plane acts on the authenticated worker id, never a client-supplied one.
    aimed at this worker (ADR-0007, CHAOS.md). Heartbeats renew the leases of running attempts the worker lists, and of
    unclaimed assignments for at most `claim-timeout` (30 s), so a worker whose intake is stuck cannot hold work.
 3. `POST deregister`: on graceful shutdown. Leaves immediately with nothing reserved, otherwise drains first.
-4. `POST claim`: returns up to `maxAssignments` ASSIGNED attempts of this worker with their payloads, and starts them
-   (RUNNING). The worker polls it every 500 ms while it has free slots, and at once after a claim that returned work.
+4. `POST claim`: returns up to `maxAssignments` ASSIGNED attempts of this worker with their payloads and trace
+   context, and starts them (RUNNING). The worker polls it every 500 ms while it has free slots, and at once after a claim that returned work.
    Long polling was not needed at this scale.
 5. `POST attempts/{id}/checkpoints` and `POST attempts/{id}/report`: fenced by attempt id + worker id. A claim
    hands over the job's last committed checkpoint, so a retry of a staged workload resumes after it.
@@ -163,12 +163,18 @@ measured separately in benchmarks. Details and measured results are in `SIMULATI
 
 ## 8. Observability
 
-- **Traces:** Micrometer Observation with the OpenTelemetry bridge, exported over OTLP. The worker
-  propagates the trace context received with an assignment, so one trace spans submission, placement
-  and execution.
-- **Metrics:** Micrometer to Prometheus, with low-cardinality tags only (`project`, `workload_type`,
-  `outcome`, `policy`).
-- **Logs:** Boot structured JSON logs with `jobId`, `attemptId`, `workerId`, `projectId` and `traceId` in the MDC.
+Details, the metric catalogue and measured examples are in `OBSERVABILITY.md`; backends in ADR-0008.
+
+- **Traces:** Micrometer Tracing with the OpenTelemetry bridge, exported over OTLP when an endpoint is configured
+  (`docker-compose.observability.yml` points it at Jaeger). A job is one trace. The submission's W3C context is stored
+  with the job; placement adds `job.queued` and `job.schedule` spans to that trace after its transaction commits. The
+  claim hands the decision's context to the worker, whose `attempt.run`, provider calls and report join the trace.
+  Polling (heartbeat, claim), actuator requests and scheduled housekeeping are not observed.
+- **Metrics:** Micrometer to Prometheus, with low-cardinality tags only (`workload_type`, `status`, `outcome`,
+  `failure_class`, `decision`, `policy`, `resource`). Counters and timers about state changes are recorded after
+  commit; queue and fleet gauges are refreshed on a schedule.
+- **Logs:** Boot structured JSON (ECS) with `traceId`/`spanId`, and `jobId`, `attemptId`, `workerId`, `projectId` as
+  fields.
 
 ## 9. Development environment
 

@@ -2,6 +2,30 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-04: Polling buried the job traces
+The first live run with Jaeger showed traces several times a second with the stack idle. The reaper and the liveness
+monitor are `@Scheduled`, and Spring observes every scheduled run. The workers claim every 500 ms and heartbeat
+every 3 s through the instrumented RestClient. Prometheus scrapes `/actuator/prometheus`. Each of these started a
+trace of its own, and a job's trace had to be searched for among hundreds of empty ones. Sampling cannot pick these
+out: a server span's name is known only once the handler is resolved, after the sampling decision. So an
+`ObservationPredicate` in each process skips them entirely. The cost is that heartbeat and claim calls no longer
+appear in `http.server.requests`. That is acceptable because their failures show up as worker liveness and lease
+expirations. Idle, the stack now emits no traces.
+
+## 2026-10-04: A job's trace outlives the request that started it
+A job is placed seconds or hours after its submission, on a scheduler thread, and run in another process. Thread-local
+trace context cannot carry that, so the submission's W3C `traceparent` is stored with the job (V10). Placement creates
+its spans as children of that stored context, and the claim hands the decision's context to the worker. Placement runs
+inside the scheduling transaction, so its spans end only after commit and are abandoned on rollback. Metrics follow
+the same rule. Without it, a rolled-back placement left a phantom `job.schedule` span in the trace
+(`aRolledBackPlacement_leavesNoSpans` fails when the guard is removed).
+
+## 2026-10-04: Queue wait is mostly polling
+In a first load look (300 jobs of 300 ms on 10 slots), the queue drained in about 24 s for 9 s of work. Queue wait
+was 12.4 s at p50 and 21.5 s at p95. Between `job.schedule` and `attempt.run` the trace shows about 520 ms: the
+worker's claim poll. After a report, the scheduler can also be in its 500 ms idle pause. Not changed here: it is
+Phase 13's to measure properly and fix with before and after data.
+
 ## 2026-10-04: The first live chaos runs found two defects
 **A heartbeating worker that never claims held its work forever.** Heartbeats renewed every unclaimed (ASSIGNED)
 attempt, on the reasoning that the worker had not seen it yet. That is true for a moment, because a worker with a
