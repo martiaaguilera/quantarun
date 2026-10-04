@@ -112,9 +112,16 @@ class FairShareSchedulingTest {
         bulkQueue(heavy, 400);
         bulkQueue(light, 400);
 
+        // Asserted round by round: this test failed once in a full run with 200 of 320 served (ENGINEERING_LOG,
+        // 2026-10-02), and a total alone cannot say which step stopped.
         for (int round = 0; round < 40; round++) {
-            cycle.runCycle(SchedulingPolicy.FAIR_SHARE);
-            completeEverything(worker);
+            var placed = cycle.runCycle(SchedulingPolicy.FAIR_SHARE);
+            assertThat(placed.placed())
+                    .as("round %d placed: %s, %s", round, placed, queueVerdicts())
+                    .isEqualTo(8);
+            assertThat(completeEverything(worker))
+                    .as("round %d completed", round)
+                    .isEqualTo(8);
         }
 
         var heavyServed = finishedCount(heavy);
@@ -223,10 +230,24 @@ class FairShareSchedulingTest {
                         """).param("p", project).query(Integer.class).single();
     }
 
-    private void completeEverything(ExecutionFixture.RegisteredWorker worker) {
+    /** @return how many attempts were claimed and accepted as succeeded */
+    private int completeEverything(ExecutionFixture.RegisteredWorker worker) {
+        int applied = 0;
         for (var claimed : attempts.claim(worker.id(), 100)) {
-            attempts.report(worker.id(), claimed.attemptId(), AttemptOutcome.SUCCEEDED, null, null, null, null);
+            var result =
+                    attempts.report(worker.id(), claimed.attemptId(), AttemptOutcome.SUCCEEDED, null, null, null, null);
+            assertThat(result).isInstanceOf(JobAttempts.ReportResult.Applied.class);
+            applied++;
         }
+        return applied;
+    }
+
+    private String queueVerdicts() {
+        return jdbc.sql("""
+                        SELECT coalesce(string_agg(DISTINCT coalesce(scheduling_outcome, '-') || ': '
+                                                   || coalesce(scheduling_reason, '-'), ' | '), 'none')
+                        FROM jobs WHERE status IN ('QUEUED', 'RETRY_WAIT')
+                        """).query(String.class).single();
     }
 
     private UUID project(String name, int weight, Integer maxRunningJobs) {
