@@ -18,7 +18,8 @@ class WorkerHealthTest {
             Duration.ofSeconds(15),
             Duration.ofSeconds(15),
             Duration.ofSeconds(1),
-            Duration.ofSeconds(15));
+            Duration.ofSeconds(15),
+            Duration.ofSeconds(30));
     private static final Instant NOW = Instant.parse("2026-10-01T12:00:00Z");
 
     @ParameterizedTest(name = "{0} ms of silence -> {1}")
@@ -45,7 +46,8 @@ class WorkerHealthTest {
                         Duration.ofSeconds(15),
                         Duration.ofSeconds(15),
                         Duration.ofSeconds(1),
-                        Duration.ofSeconds(15)))
+                        Duration.ofSeconds(15),
+                        Duration.ofSeconds(30)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new WorkerProperties(
                         "x".repeat(32),
@@ -54,7 +56,8 @@ class WorkerHealthTest {
                         Duration.ofSeconds(7), // offline no later than late
                         Duration.ofSeconds(15),
                         Duration.ofSeconds(1),
-                        Duration.ofSeconds(15)))
+                        Duration.ofSeconds(15),
+                        Duration.ofSeconds(30)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

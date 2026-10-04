@@ -59,7 +59,8 @@ class WorkerRetirementGraceTest {
                 Duration.ofSeconds(15),
                 Duration.ofSeconds(15),
                 Duration.ofSeconds(1),
-                startupGrace);
+                startupGrace,
+                Duration.ofSeconds(30));
     }
 
     private static final class SettableClock extends Clock {

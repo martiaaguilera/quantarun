@@ -158,8 +158,8 @@ public class JobAttempts {
      */
     @Transactional
     public Renewal renewLeases(UUID workerId, List<UUID> runningAttemptIds) {
-        var renewed =
-                new HashSet<>(attempts.renewLeases(workerId, runningAttemptIds, workerProperties.leaseDuration()));
+        var renewed = new HashSet<>(attempts.renewLeases(
+                workerId, runningAttemptIds, workerProperties.leaseDuration(), workerProperties.claimTimeout()));
         var renewedRunning =
                 runningAttemptIds.stream().filter(renewed::contains).toList();
         var lost =

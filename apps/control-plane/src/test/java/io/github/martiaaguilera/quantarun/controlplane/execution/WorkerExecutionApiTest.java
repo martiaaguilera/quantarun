@@ -226,6 +226,34 @@ class WorkerExecutionApiTest {
         assertThat(fixture.attemptStatus(attempt)).isEqualTo("RUNNING");
     }
 
+    /**
+     * Found by the STOP_CLAIMING chaos fault: a worker that kept heartbeating but never claimed held its assignments
+     * forever, because heartbeats renewed every unclaimed one. Now only assignments younger than the claim timeout are
+     * renewed; an older one is left to expire, and the job moves to another worker.
+     */
+    @Test
+    void heartbeat_stopsRenewingAnAssignmentLeftUnclaimedPastTheClaimTimeout() throws Exception {
+        var stuck = fixture.worker("stuck", 2);
+        var fresh = fixture.submit(3);
+        var stale = fixture.submit(3);
+        fixture.place();
+        var freshAttempt = fixture.latestAttempt(fresh);
+        var staleAttempt = fixture.latestAttempt(stale);
+        jdbc.sql("UPDATE job_attempts SET assigned_at = now() - interval '31 seconds' WHERE id = :id")
+                .param("id", staleAttempt)
+                .update();
+
+        heartbeat(stuck).andExpect(status().isOk());
+
+        assertThat(renewals(freshAttempt)).isEqualTo(1);
+        assertThat(renewals(staleAttempt)).isZero();
+        fixture.expireLease(staleAttempt);
+        assertThat(attempts.recoverExpiredLeases(10)).isEqualTo(1);
+        assertThat(fixture.attemptStatus(staleAttempt)).isEqualTo("LOST");
+        assertThat(fixture.jobStatus(stale)).isEqualTo("RETRY_WAIT");
+        assertThat(fixture.attemptStatus(freshAttempt)).isEqualTo("ASSIGNED");
+    }
+
     @Test
     void heartbeat_renewsReportedLeases_andListsLostAndCancelledAttempts() throws Exception {
         var worker = fixture.worker("beater", 3);

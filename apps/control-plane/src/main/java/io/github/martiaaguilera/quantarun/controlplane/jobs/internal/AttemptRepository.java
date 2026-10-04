@@ -72,7 +72,8 @@ public class AttemptRepository {
 
     /**
      * Renews the leases a live worker still holds. Unclaimed (ASSIGNED) attempts are renewed implicitly, because the
-     * worker has not seen them yet. RUNNING ones are renewed only if the worker reports them, so an attempt the worker
+     * worker has not seen them yet, but only for {@code claimTimeout} after placement: a worker that heartbeats yet never
+     * claims would otherwise hold its assignments forever. RUNNING ones are renewed only if the worker reports them, so an attempt the worker
      * lost track of still expires. An already-expired lease is never renewed (invariant I10): if the reaper holds the
      * row, this statement waits, re-checks the predicate and skips the now-LOST attempt.
      *
@@ -80,14 +81,16 @@ public class AttemptRepository {
      * order the plan visits them, so two overlapping heartbeats of one worker (a retry after a client timeout, or two
      * control-plane instances) deadlocked in {@code LeaseRecoveryTest}; a fixed order makes them queue instead.
      */
-    public List<UUID> renewLeases(UUID workerId, List<UUID> runningAttemptIds, Duration leaseDuration) {
+    public List<UUID> renewLeases(
+            UUID workerId, List<UUID> runningAttemptIds, Duration leaseDuration, Duration claimTimeout) {
         return jdbc.sql("""
                         WITH renewable AS (
                             SELECT id FROM job_attempts
                             WHERE worker_id = :workerId
                               AND status IN ('ASSIGNED', 'RUNNING')
                               AND lease_expires_at > now()
-                              AND (status = 'ASSIGNED' OR id = ANY(:ids))
+                              AND ((status = 'ASSIGNED' AND assigned_at > now() - make_interval(secs => :claimSeconds))
+                                   OR id = ANY(:ids))
                             ORDER BY id
                             FOR UPDATE
                         )
@@ -103,6 +106,7 @@ public class AttemptRepository {
                 .param("workerId", workerId)
                 .param("ids", runningAttemptIds.toArray(UUID[]::new))
                 .param("leaseSeconds", leaseDuration.toMillis() / 1000.0)
+                .param("claimSeconds", claimTimeout.toMillis() / 1000.0)
                 .query(UUID.class)
                 .list();
     }
