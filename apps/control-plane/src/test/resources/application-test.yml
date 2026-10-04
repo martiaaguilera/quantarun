@@ -10,3 +10,6 @@ quantarun:
   scheduler:
     # Tests drive SchedulingCycle directly; background loops would race them.
     enabled: false
+  chaos:
+    # Experiments exist only when a test creates one; ChaosExperimentsTest covers the disabled deployment.
+    enabled: true

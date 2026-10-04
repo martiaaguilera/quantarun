@@ -11,7 +11,10 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
+import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.ChaosFault;
+import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +40,7 @@ class AttemptExecutorTest {
     private static final Duration IDLE_TIMEOUT = Duration.ofSeconds(10);
 
     private MockRestServiceServer server;
+    private final ChaosInjector chaos = new ChaosInjector(true, Clock.systemUTC(), () -> {});
     private AttemptExecutor executor;
 
     @BeforeEach
@@ -48,6 +52,7 @@ class AttemptExecutorTest {
                 2,
                 new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
                 new AttemptExecutor.HttpSettings(List.of(), Duration.ofSeconds(1)),
+                chaos,
                 RandomGenerator.of("L64X128MixRandom"));
     }
 
@@ -127,6 +132,67 @@ class AttemptExecutorTest {
 
         assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
         server.verify();
+    }
+
+    @Test
+    void stallChaos_hangsTheNextAttemptUntilItsTimeout_andOnlyThatOne() throws Exception {
+        chaos.apply(List.of(directive(ChaosFault.STALL_ATTEMPTS, 1, 0)));
+        var stalled = assignment("delay", Map.of("durationMs", 0), 1);
+        var next = assignment("delay", Map.of("durationMs", 0), 1);
+        expectReport(stalled)
+                .andExpect(jsonPath("$.failureClass").value("TIMEOUT"))
+                .andRespond(accepted(stalled, "RETRY_WAIT"));
+        expectReport(next).andExpect(jsonPath("$.outcome").value("SUCCEEDED")).andRespond(accepted(next, "SUCCEEDED"));
+
+        executor.start(stalled, SECRET);
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        executor.start(next, SECRET);
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+
+        server.verify();
+    }
+
+    @Test
+    void providerRateLimitChaos_isReportedAsRateLimited_withItsRetryAfter() throws Exception {
+        chaos.apply(List.of(directive(ChaosFault.PROVIDER_RATE_LIMITED, 1, 7_000)));
+        var attempt = assignment("mock-inference", Map.of("inputTokens", 10, "outputTokens", 10, "latencyMs", 0), 30);
+        expectReport(attempt)
+                .andExpect(jsonPath("$.failureClass").value("RATE_LIMITED"))
+                .andExpect(jsonPath("$.retryAfterMillis").value(7_000))
+                .andRespond(accepted(attempt, "RETRY_WAIT"));
+
+        executor.start(attempt, SECRET);
+
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        server.verify();
+    }
+
+    @Test
+    void providerErrorAndMalformedChaos_areTransient() throws Exception {
+        chaos.apply(
+                List.of(directive(ChaosFault.PROVIDER_ERROR, 1, 0), directive(ChaosFault.PROVIDER_MALFORMED, 1, 0)));
+        var payload = Map.<String, Object>of("inputTokens", 10, "outputTokens", 10, "latencyMs", 0);
+        var first = assignment("mock-inference", payload, 30);
+        var second = assignment("mock-inference", payload, 30);
+        expectReport(first)
+                .andExpect(jsonPath("$.failureClass").value("TRANSIENT"))
+                .andExpect(jsonPath("$.message").value(Matchers.containsString("HTTP 500")))
+                .andRespond(accepted(first, "RETRY_WAIT"));
+        expectReport(second)
+                .andExpect(jsonPath("$.failureClass").value("TRANSIENT"))
+                .andExpect(jsonPath("$.message").value(Matchers.containsString("could not be parsed")))
+                .andRespond(accepted(second, "RETRY_WAIT"));
+
+        executor.start(first, SECRET);
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        executor.start(second, SECRET);
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+
+        server.verify();
+    }
+
+    private static WorkerProtocol.ChaosDirective directive(ChaosFault fault, int count, long retryAfterMillis) {
+        return new WorkerProtocol.ChaosDirective(UUID.randomUUID(), fault, 0, 0, count, retryAfterMillis, 0);
     }
 
     @Test

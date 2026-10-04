@@ -1,5 +1,6 @@
 package io.github.martiaaguilera.quantarun.controlplane.execution;
 
+import io.github.martiaaguilera.quantarun.controlplane.chaos.ChaosExperiments;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.JobAttempts;
 import io.github.martiaaguilera.quantarun.controlplane.web.ApiException;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerAuthenticationFilter;
@@ -34,11 +35,13 @@ class ExecutionController {
 
     private final WorkerRegistry registry;
     private final JobAttempts attempts;
+    private final ChaosExperiments chaos;
     private final JsonMapper json;
 
-    ExecutionController(WorkerRegistry registry, JobAttempts attempts, JsonMapper json) {
+    ExecutionController(WorkerRegistry registry, JobAttempts attempts, ChaosExperiments chaos, JsonMapper json) {
         this.registry = registry;
         this.attempts = attempts;
+        this.chaos = chaos;
         this.json = json;
     }
 
@@ -54,7 +57,8 @@ class ExecutionController {
         var lifecycle = registry.heartbeat(workerId);
         var renewal = attempts.renewLeases(
                 workerId, request.activeAttemptIds().stream().distinct().toList());
-        return new WorkerProtocol.HeartbeatResponse(lifecycle, renewal.cancelRequested(), renewal.lost());
+        return new WorkerProtocol.HeartbeatResponse(
+                lifecycle, renewal.cancelRequested(), renewal.lost(), chaos.deliver(workerId));
     }
 
     /**

@@ -1,6 +1,7 @@
 package io.github.martiaaguilera.quantarun.controlplane.jobs.internal;
 
 import io.github.martiaaguilera.quantarun.controlplane.jobs.AttemptStatus;
+import io.github.martiaaguilera.quantarun.controlplane.jobs.WorkerAttempt;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -213,6 +214,36 @@ public class AttemptRepository {
             @Nullable String failureMessage,
             @Nullable String retryDecision,
             tools.jackson.databind.@Nullable JsonNode result) {}
+
+    /**
+     * Attempts a worker held at some point during [from, to]: assigned by {@code to} and not finished before
+     * {@code from}. Finished attempts are not indexed by worker, so this scans {@code job_attempts}: acceptable for an
+     * operator opening one chaos timeline, and the reason it must never join a hot path.
+     */
+    public List<WorkerAttempt> findOnWorkerDuring(
+            UUID workerId, java.time.Instant from, java.time.Instant to, int limit) {
+        return jdbc.sql("""
+                        SELECT id, job_id, attempt_no, status, assigned_at, finished_at, failure_class
+                        FROM job_attempts
+                        WHERE worker_id = :workerId AND assigned_at <= :to
+                          AND (finished_at IS NULL OR finished_at >= :from)
+                        ORDER BY assigned_at, id
+                        LIMIT :limit
+                        """)
+                .param("workerId", workerId)
+                .param("from", java.sql.Timestamp.from(from))
+                .param("to", java.sql.Timestamp.from(to))
+                .param("limit", limit)
+                .query((rs, row) -> new WorkerAttempt(
+                        rs.getObject("id", UUID.class),
+                        rs.getObject("job_id", UUID.class),
+                        rs.getInt("attempt_no"),
+                        AttemptStatus.valueOf(rs.getString("status")),
+                        JobRepository.instant(rs, "assigned_at"),
+                        JobRepository.instant(rs, "finished_at"),
+                        rs.getString("failure_class")))
+                .list();
+    }
 
     public List<AttemptView> findByJob(UUID jobId) {
         return jdbc.sql("""

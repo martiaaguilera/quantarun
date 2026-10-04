@@ -1,6 +1,7 @@
 package io.github.martiaaguilera.quantarun.worker;
 
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
+import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
 import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
 import java.time.Duration;
@@ -28,6 +29,7 @@ public class WorkerAgent {
     private final ControlPlaneClient controlPlane;
     private final AttemptExecutor executor;
     private final WorkerSettings settings;
+    private final ChaosInjector chaos;
     private final String version;
     private final Backoff backoff;
     private final RandomGenerator random;
@@ -43,11 +45,13 @@ public class WorkerAgent {
             ControlPlaneClient controlPlane,
             AttemptExecutor executor,
             WorkerSettings settings,
+            ChaosInjector chaos,
             String version,
             RandomGenerator random) {
         this.controlPlane = controlPlane;
         this.executor = executor;
         this.settings = settings;
+        this.chaos = chaos;
         this.version = version;
         this.backoff = new Backoff(Duration.ofMillis(500), settings.maxRetryDelay());
         this.random = random;
@@ -81,6 +85,10 @@ public class WorkerAgent {
     }
 
     private Duration heartbeat(Registration current) {
+        if (chaos.heartbeatPaused()) {
+            // PAUSE_HEARTBEAT chaos: attempts keep running, but nothing renews their leases.
+            return current.heartbeatInterval();
+        }
         try {
             var response = controlPlane.heartbeat(current.secret(), executor.runningAttemptIds());
             if (response.lifecycle() != lifecycle) {
@@ -89,6 +97,7 @@ public class WorkerAgent {
             lifecycle = response.lifecycle();
             response.lostAttemptIds().forEach(executor::abandon);
             response.cancelAttemptIds().forEach(executor::cancel);
+            chaos.apply(response.chaos());
             consecutiveFailures = 0;
             return current.heartbeatInterval();
         } catch (ControlPlaneClient.RegistrationRetiredException e) {
@@ -111,7 +120,7 @@ public class WorkerAgent {
     public Duration claimStep() {
         var current = registration;
         var free = executor.freeSlots();
-        if (current == null || leaving || free == 0) {
+        if (current == null || leaving || free == 0 || chaos.claimingStopped()) {
             return settings.claimInterval();
         }
         try {

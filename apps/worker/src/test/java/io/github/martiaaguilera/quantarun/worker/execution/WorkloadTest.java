@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
+import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -118,8 +119,8 @@ class WorkloadTest {
 
         @Test
         void reportsTokenCountsLikeAProvider() throws Exception {
-            var result =
-                    new MockInferenceWorkload().execute(new Payload(payload), AttemptContext.withoutCheckpoints(1));
+            var result = new MockInferenceWorkload(ChaosInjector.disabled())
+                    .execute(new Payload(payload), AttemptContext.withoutCheckpoints(1));
 
             assertThat(result)
                     .containsEntry("model", "mock")
@@ -132,7 +133,7 @@ class WorkloadTest {
 
         @Test
         void isDeterministicForTheSamePayload_andDiffersForAnotherSeed() throws Exception {
-            var workload = new MockInferenceWorkload();
+            var workload = new MockInferenceWorkload(ChaosInjector.disabled());
             var first = workload.execute(new Payload(payload), AttemptContext.withoutCheckpoints(1));
             var retry = workload.execute(new Payload(payload), AttemptContext.withoutCheckpoints(2));
             var other = workload.execute(
@@ -145,7 +146,7 @@ class WorkloadTest {
 
         @Test
         void requiresTheTokenCounts() {
-            assertInvalid(() -> new MockInferenceWorkload()
+            assertInvalid(() -> new MockInferenceWorkload(ChaosInjector.disabled())
                     .execute(
                             new Payload(Map.of("outputTokens", 1, "latencyMs", 0)),
                             AttemptContext.withoutCheckpoints(1)));

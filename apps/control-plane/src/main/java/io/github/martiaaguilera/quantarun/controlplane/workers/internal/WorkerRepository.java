@@ -124,6 +124,17 @@ public class WorkerRepository {
                 .optional();
     }
 
+    /** Later registrations of a worker process: a restarted or re-admitted worker registers again under its name. */
+    public List<Worker> findByNameRegisteredSince(String name, java.time.Instant since, int limit) {
+        return jdbc.sql(SELECT_WORKERS
+                        + " WHERE w.name = :name AND w.registered_at >= :since ORDER BY w.id LIMIT :limit")
+                .param("name", name)
+                .param("since", java.sql.Timestamp.from(since))
+                .param("limit", limit)
+                .query(this::mapWorker)
+                .list();
+    }
+
     /** The fleet is small (tens of workers), so the list is bounded by a generous cap rather than paginated. */
     public List<Worker> findAll(@Nullable WorkerLifecycle lifecycle, int limit) {
         var sql = SELECT_WORKERS + (lifecycle == null ? "" : " WHERE w.lifecycle = :lifecycle")

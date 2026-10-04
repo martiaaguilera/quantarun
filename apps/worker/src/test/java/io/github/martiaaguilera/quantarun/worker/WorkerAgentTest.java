@@ -9,11 +9,15 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
+import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
 import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
 import java.net.URI;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.random.RandomGenerator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +35,8 @@ class WorkerAgentTest {
     private static final String WORKER_ID = "01a0f358-0000-7000-8000-000000000001";
     private static final String SECRET = "qw_00000001_" + "S".repeat(43);
 
+    private final CountDownLatch halted = new CountDownLatch(1);
+    private final ChaosInjector chaos = new ChaosInjector(true, Clock.systemUTC(), halted::countDown);
     private MockRestServiceServer server;
     private WorkerAgent agent;
 
@@ -50,7 +56,8 @@ class WorkerAgentTest {
                 Duration.ofMillis(500),
                 Duration.ofSeconds(5),
                 3,
-                List.of());
+                List.of(),
+                true);
         var client = new ControlPlaneClient(builder.build(), BOOTSTRAP);
         // A fixed seed makes the jittered backoff reproducible in assertions.
         agent = new WorkerAgent(
@@ -60,8 +67,10 @@ class WorkerAgentTest {
                         4,
                         new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
                         new AttemptExecutor.HttpSettings(List.of(), Duration.ofSeconds(1)),
+                        ChaosInjector.disabled(),
                         RandomGenerator.of("L64X128MixRandom")),
                 settings,
+                chaos,
                 "test",
                 RandomGenerator.of("L64X128MixRandom"));
     }
@@ -157,6 +166,57 @@ class WorkerAgentTest {
 
         assertThat(agent.workerId()).isEmpty();
         server.verify();
+    }
+
+    /** The fault arrives in a heartbeat response; from then on no heartbeat leaves until the pause ends. */
+    @Test
+    void pauseHeartbeatChaos_stopsHeartbeatsButNotTheWorker() {
+        expectRegistration();
+        server.expect(requestTo(BASE + "/worker-api/v1/heartbeat"))
+                .andRespond(withSuccess(heartbeatWithChaos("PAUSE_HEARTBEAT"), MediaType.APPLICATION_JSON));
+
+        agent.step();
+        agent.step();
+        var paused = agent.step();
+
+        assertThat(paused).isEqualTo(Duration.ofMillis(3000));
+        assertThat(agent.workerId()).isPresent();
+        // Only the one heartbeat that carried the fault was expected: a second request would fail verification.
+        server.verify();
+    }
+
+    @Test
+    void stopClaimingChaos_leavesAssignmentsUnclaimed() {
+        expectRegistration();
+        server.expect(requestTo(BASE + "/worker-api/v1/heartbeat"))
+                .andRespond(withSuccess(heartbeatWithChaos("STOP_CLAIMING"), MediaType.APPLICATION_JSON));
+
+        agent.step();
+        agent.step();
+        var delay = agent.claimStep();
+
+        assertThat(delay).isEqualTo(Duration.ofMillis(500));
+        server.verify();
+    }
+
+    @Test
+    void killChaos_haltsTheProcessAfterItsDelay() throws InterruptedException {
+        expectRegistration();
+        server.expect(requestTo(BASE + "/worker-api/v1/heartbeat"))
+                .andRespond(withSuccess(heartbeatWithChaos("KILL_WORKER"), MediaType.APPLICATION_JSON));
+
+        agent.step();
+        agent.step();
+
+        assertThat(halted.await(5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    private static String heartbeatWithChaos(String fault) {
+        return """
+                {"lifecycle":"ACTIVE","cancelAttemptIds":[],"lostAttemptIds":[],
+                 "chaos":[{"experimentId":"01a0f358-0000-7000-8000-0000000000c1","fault":"%s","delayMillis":10,
+                           "durationMillis":30000,"count":0,"retryAfterMillis":0,"latencyMillis":0}]}
+                """.formatted(fault);
     }
 
     private void expectRegistration() {

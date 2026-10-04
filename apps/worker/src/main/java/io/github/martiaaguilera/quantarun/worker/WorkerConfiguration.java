@@ -1,7 +1,9 @@
 package io.github.martiaaguilera.quantarun.worker;
 
+import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
 import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.random.RandomGenerator;
 import org.springframework.beans.factory.ObjectProvider;
@@ -19,27 +21,38 @@ import org.springframework.web.client.RestClient;
 @EnableConfigurationProperties(WorkerSettings.class)
 class WorkerConfiguration {
 
+    @Bean(destroyMethod = "close")
+    ChaosInjector chaosInjector(WorkerSettings settings) {
+        return new ChaosInjector(settings.chaosEnabled(), Clock.systemUTC(), ChaosInjector.haltProcess());
+    }
+
     @Bean
-    ControlPlaneClient controlPlaneClient(RestClient.Builder builder, WorkerSettings settings) {
+    ControlPlaneClient controlPlaneClient(RestClient.Builder builder, WorkerSettings settings, ChaosInjector chaos) {
         // Explicit timeouts: a hung control plane must turn into a failed heartbeat, not a stuck membership thread.
         var requestFactory = ClientHttpRequestFactoryBuilder.detect()
                 .build(HttpClientSettings.defaults()
                         .withTimeouts(settings.connectTimeout(), settings.requestTimeout()));
         var http = builder.baseUrl(settings.controlPlaneUrl().toString())
                 .requestFactory(requestFactory)
+                // NETWORK_LATENCY chaos: every call to the control plane waits first, the way a slow link would.
+                .requestInterceptor((request, body, execution) -> {
+                    chaos.delayCall();
+                    return execution.execute(request, body);
+                })
                 .build();
         return new ControlPlaneClient(http, settings.bootstrapToken());
     }
 
     /** One execution slot per declared slot: the control plane reserves exactly this many. */
     @Bean(destroyMethod = "close")
-    AttemptExecutor attemptExecutor(ControlPlaneClient client, WorkerSettings settings) {
+    AttemptExecutor attemptExecutor(ControlPlaneClient client, WorkerSettings settings, ChaosInjector chaos) {
         return new AttemptExecutor(
                 client,
                 settings.capacity().slots(),
                 new AttemptExecutor.ReportPolicy(
                         settings.reportAttempts(), Duration.ofMillis(200), Duration.ofSeconds(5)),
                 new AttemptExecutor.HttpSettings(settings.httpAllowedPrivateAddresses(), settings.connectTimeout()),
+                chaos,
                 RandomGenerator.getDefault());
     }
 
@@ -48,10 +61,11 @@ class WorkerConfiguration {
             ControlPlaneClient client,
             AttemptExecutor executor,
             WorkerSettings settings,
+            ChaosInjector chaos,
             ObjectProvider<BuildProperties> build) {
         var version =
                 build.getIfAvailable() == null ? "dev" : build.getIfAvailable().getVersion();
-        return new WorkerAgent(client, executor, settings, version, RandomGenerator.getDefault());
+        return new WorkerAgent(client, executor, settings, chaos, version, RandomGenerator.getDefault());
     }
 
     @Bean

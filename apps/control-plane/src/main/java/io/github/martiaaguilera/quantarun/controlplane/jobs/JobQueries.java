@@ -5,7 +5,9 @@ import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.CheckpointR
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobEventRepository;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobRepository;
 import io.github.martiaaguilera.quantarun.controlplane.security.Caller;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.stereotype.Component;
@@ -61,6 +63,20 @@ public class JobQueries {
     public List<AttemptRepository.AttemptView> attempts(Caller caller, UUID jobId) {
         get(caller, jobId);
         return attempts.findByJob(jobId);
+    }
+
+    /** The worker holding the job's active (assigned or running) attempt, if it has one. */
+    public Optional<UUID> activeWorker(Caller caller, UUID jobId) {
+        return attempts(caller, jobId).stream()
+                .filter(attempt -> AttemptStatus.valueOf(attempt.status()).isActive())
+                .map(AttemptRepository.AttemptView::workerId)
+                .findFirst();
+    }
+
+    /** Operator read: the attempts a worker held during a time window, across every project. */
+    public List<WorkerAttempt> attemptsOnWorker(
+            Caller.Admin caller, UUID workerId, Instant from, Instant to, int limit) {
+        return attempts.findOnWorkerDuring(workerId, from, to, Math.clamp(limit, 1, MAX_PAGE_SIZE));
     }
 
     public List<CheckpointRepository.Checkpoint> checkpoints(Caller caller, UUID jobId) {
