@@ -4,7 +4,7 @@ A local-first control plane for scheduling, executing, recovering, replaying and
 workloads. It uses PostgreSQL for coordination and OpenTelemetry for visibility, and runs at zero cost with no
 API keys.
 
-> **Status: early development (Phase 10 of 15).** Implemented so far: the job API with a centrally enforced state
+> **Status: early development (Phase 11 of 15).** Implemented so far: the job API with a centrally enforced state
 > machine, idempotent submission (proven with 500 concurrent duplicates on real PostgreSQL), cooperative
 > cancellation, project-scoped API keys and OpenAPI. On the fleet side: three heterogeneous workers that register with
 > per-worker credentials, heartbeat, drain and deregister; silent ones are retired, with a grace period after a
@@ -22,8 +22,9 @@ API keys.
 > operator can inject eight predefined faults into the workers (crash, silence, stuck intake, latency, stalls, provider
 > 429/500/garbage) and read the recovery timeline ([docs/CHAOS.md](docs/CHAOS.md)). Every job is one OpenTelemetry trace
 > across the control plane and the worker, with Prometheus metrics and correlated structured logs; Jaeger and
-> Prometheus come as an optional compose overlay ([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)). The console comes
-> next. This README only describes what exists.
+> Prometheus come as an optional compose overlay ([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)). An operations
+> console shows the queue, each job's story and lifeline, the fleet, scheduling decisions, the policy and chaos labs,
+> and updates live over Server-Sent Events. This README only describes what exists.
 
 ## What it will be
 
