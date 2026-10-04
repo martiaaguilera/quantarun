@@ -1,0 +1,39 @@
+# Observability add-on: traces in Jaeger, metrics in Prometheus (docs/OBSERVABILITY.md).
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build
+# Jaeger UI: http://localhost:16686   Prometheus: http://localhost:9090
+# Both keep their data in memory only; restarting them starts empty. That is enough to look at a local run.
+x-traces: &traces
+  MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+
+services:
+  control-plane:
+    environment:
+      <<: *traces
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  worker-cpu:
+    environment:
+      <<: *traces
+
+  worker-mixed:
+    environment:
+      <<: *traces
+
+  worker-accel:
+    environment:
+      <<: *traces
+
+  # All-in-one Jaeger v2: an OTLP receiver, in-memory storage and the UI in one process.
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    ports:
+      - "127.0.0.1:16686:16686"
+
+  prometheus:
+    image: prom/prometheus:v3.7.2
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"

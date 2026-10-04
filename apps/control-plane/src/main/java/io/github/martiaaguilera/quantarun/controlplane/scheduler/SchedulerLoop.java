@@ -1,5 +1,8 @@
 package io.github.martiaaguilera.quantarun.controlplane.scheduler;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,12 +23,14 @@ class SchedulerLoop implements SmartLifecycle {
 
     private final SchedulingCycle cycle;
     private final SchedulerProperties properties;
+    private final MeterRegistry meters;
     private final List<Thread> threads = new ArrayList<>();
     private volatile boolean running;
 
-    SchedulerLoop(SchedulingCycle cycle, SchedulerProperties properties) {
+    SchedulerLoop(SchedulingCycle cycle, SchedulerProperties properties, MeterRegistry meters) {
         this.cycle = cycle;
         this.properties = properties;
+        this.meters = meters;
     }
 
     @Override
@@ -44,7 +49,10 @@ class SchedulerLoop implements SmartLifecycle {
         while (running) {
             Duration pause;
             try {
+                // Timed here, around the transactional call, so the duration includes the commit.
+                var started = System.nanoTime();
                 var result = cycle.runCycle(properties.policy());
+                recordCycle(System.nanoTime() - started, result.placed());
                 pause = result.placed() > 0 ? Duration.ZERO : properties.idleDelay();
             } catch (DataAccessException e) {
                 // A failed cycle rolls back as a whole, leaving no partial placement; the next cycle simply retries.
@@ -62,6 +70,24 @@ class SchedulerLoop implements SmartLifecycle {
                 Thread.currentThread().interrupt();
                 return;
             }
+        }
+    }
+
+    private void recordCycle(long nanos, int placed) {
+        var policy = properties.policy().name();
+        Timer.builder("quantarun.scheduler.cycle")
+                .description("One scheduling cycle: lock a window, plan, place, commit")
+                .tag("policy", policy)
+                .tag("result", placed > 0 ? "placed" : "idle")
+                .publishPercentileHistogram()
+                .register(meters)
+                .record(nanos, TimeUnit.NANOSECONDS);
+        if (placed > 0) {
+            Counter.builder("quantarun.scheduler.placements")
+                    .description("Attempts placed on workers")
+                    .tag("policy", policy)
+                    .register(meters)
+                    .increment(placed);
         }
     }
 

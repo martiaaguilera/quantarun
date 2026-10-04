@@ -86,7 +86,8 @@ class JobController {
             @Nullable String schedulingReason,
             Instant createdAt,
             Instant updatedAt,
-            @Nullable Instant finishedAt) {
+            @Nullable Instant finishedAt,
+            @Nullable String traceId) {
 
         static JobResponse from(Job job) {
             var resources = job.resources();
@@ -112,8 +113,14 @@ class JobController {
                     job.schedulingReason(),
                     job.createdAt(),
                     job.updatedAt(),
-                    job.finishedAt());
+                    job.finishedAt(),
+                    traceIdOf(job.traceParent()));
         }
+    }
+
+    /** The trace id inside a W3C traceparent ({@code 00-<trace id>-<span id>-<flags>}), for looking the job up in a trace UI. */
+    static @Nullable String traceIdOf(@Nullable String traceParent) {
+        return traceParent == null ? null : traceParent.substring(3, 35);
     }
 
     /** {@code nextBefore} is the cursor for the next (older) page; absent on the last page. */

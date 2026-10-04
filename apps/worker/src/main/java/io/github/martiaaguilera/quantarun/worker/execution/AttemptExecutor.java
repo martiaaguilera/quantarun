@@ -6,6 +6,9 @@ import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
 import io.github.martiaaguilera.quantarun.worker.Backoff;
 import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.tracing.Span;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
@@ -81,6 +84,7 @@ public class AttemptExecutor implements AutoCloseable {
 
     private final ControlPlaneClient controlPlane;
     private final ChaosInjector chaos;
+    private final AttemptTelemetry telemetry;
     private final int slots;
     private final ReportPolicy reportPolicy;
     private final RandomGenerator random;
@@ -98,21 +102,34 @@ public class AttemptExecutor implements AutoCloseable {
             ReportPolicy reportPolicy,
             HttpSettings http,
             ChaosInjector chaos,
+            AttemptTelemetry telemetry,
             RandomGenerator random) {
         this.controlPlane = controlPlane;
         this.chaos = chaos;
+        this.telemetry = telemetry;
         this.slots = slots;
         this.reportPolicy = reportPolicy;
         this.random = random;
+        var providerCalls = new ProviderCalls(telemetry.observations());
         this.workloads = Stream.of(
                         new DelayWorkload(),
                         new CpuHashWorkload(),
-                        new MockInferenceWorkload(chaos),
+                        new MockInferenceWorkload(chaos, providerCalls),
                         new FailWorkload(),
                         new MemoryWorkload(),
                         new StagedWorkload(),
-                        new HttpWorkload(http.allowedPrivateAddresses(), http.connectTimeout(), Clock.systemUTC()))
+                        new HttpWorkload(
+                                http.allowedPrivateAddresses(),
+                                http.connectTimeout(),
+                                Clock.systemUTC(),
+                                providerCalls))
                 .collect(Collectors.toUnmodifiableMap(Workload::type, Function.identity()));
+        Gauge.builder("quantarun.worker.slots.busy", running, Map::size)
+                .description("Execution slots running an attempt")
+                .register(telemetry.meters());
+        Gauge.builder("quantarun.worker.slots", () -> slots)
+                .description("Execution slots this worker offers")
+                .register(telemetry.meters());
     }
 
     /** Only the claiming thread adds attempts, so this never under-counts what it is about to claim. */
@@ -183,12 +200,18 @@ public class AttemptExecutor implements AutoCloseable {
         threads.shutdownNow();
     }
 
+    /**
+     * The attempt runs inside a span that continues the job's trace from the assignment, so its execution, provider
+     * calls and the report (the HTTP client propagates the context) join the trace that began at submission.
+     */
     private void run(Running attempt) {
         var assignment = attempt.assignment;
         attempt.thread = Thread.currentThread();
+        var span = attemptSpan(assignment);
+        var started = System.nanoTime();
         ScheduledFuture<?> timeout =
                 timeouts.schedule(() -> stop(attempt, Stop.TIMED_OUT), assignment.timeoutSeconds(), TimeUnit.SECONDS);
-        try {
+        try (var _ = telemetry.tracer().withSpan(span)) {
             var report = execute(attempt);
             timeout.cancel(false);
             // Any interrupt meant for the execution is irrelevant now; it must not abort the report's HTTP call.
@@ -198,11 +221,35 @@ public class AttemptExecutor implements AutoCloseable {
             }
         } finally {
             timeout.cancel(false);
+            var stop = attempt.stop.get();
+            var stopName = stop == null ? "UNKNOWN" : stop.name();
+            span.tag("quantarun.stop", stopName);
+            span.end();
+            Timer.builder("quantarun.worker.attempts")
+                    .description("Attempts run by this worker, from claim to the end of the report")
+                    .tag("workload_type", assignment.workloadType())
+                    .tag("stop", stopName)
+                    .register(telemetry.meters())
+                    .record(System.nanoTime() - started, TimeUnit.NANOSECONDS);
             running.remove(assignment.attemptId());
             synchronized (idle) {
                 idle.notifyAll();
             }
         }
+    }
+
+    private Span attemptSpan(WorkerProtocol.Assignment assignment) {
+        var builder = assignment.traceParent() == null
+                ? telemetry.tracer().spanBuilder().setNoParent()
+                : telemetry
+                        .propagator()
+                        .extract(Map.of("traceparent", assignment.traceParent()), (carrier, key) -> carrier.get(key));
+        return builder.name("attempt.run")
+                .tag("quantarun.attempt.id", assignment.attemptId().toString())
+                .tag("quantarun.job.id", assignment.jobId().toString())
+                .tag("quantarun.attempt.no", String.valueOf(assignment.attemptNo()))
+                .tag("quantarun.workload_type", assignment.workloadType())
+                .start();
     }
 
     /** @return the report to send, or null when the attempt must not be reported (it was lost). */

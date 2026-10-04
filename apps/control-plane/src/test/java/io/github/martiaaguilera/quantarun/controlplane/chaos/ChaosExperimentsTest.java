@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.github.martiaaguilera.quantarun.controlplane.security.Caller;
 import io.github.martiaaguilera.quantarun.controlplane.web.ApiException;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.ChaosFault;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -14,8 +15,8 @@ import org.junit.jupiter.api.Test;
 class ChaosExperimentsTest {
 
     // No repository or query is reached when chaos is off; null collaborators would fail loudly if one were.
-    private final ChaosExperiments disabled =
-            new ChaosExperiments(null, new ChaosProperties(false, Duration.ofSeconds(30), 5), null, null);
+    private final ChaosExperiments disabled = new ChaosExperiments(
+            null, new ChaosProperties(false, Duration.ofSeconds(30), 5), null, null, new SimpleMeterRegistry());
 
     @Test
     void creatingAnExperiment_isForbidden() {

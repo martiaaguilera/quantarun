@@ -43,11 +43,13 @@ public class JobPlacement {
     private final JdbcClient jdbc;
     private final JobRepository jobs;
     private final JobEventRepository events;
+    private final JobTracing tracing;
 
-    JobPlacement(JdbcClient jdbc, JobRepository jobs, JobEventRepository events) {
+    JobPlacement(JdbcClient jdbc, JobRepository jobs, JobEventRepository events, JobTracing tracing) {
         this.jdbc = jdbc;
         this.jobs = jobs;
         this.events = events;
+        this.tracing = tracing;
     }
 
     /**
@@ -95,11 +97,12 @@ public class JobPlacement {
     public UUID assignAttempt(Job job, UUID workerId, String reason, Duration leaseDuration) {
         job.status().requireTransitionTo(JobStatus.SCHEDULED);
         var attemptNo = job.attemptCount() + 1;
+        var traceParent = tracing.placement(job, attemptNo, workerId, reason);
         var attemptId = jdbc.sql("""
                         INSERT INTO job_attempts (job_id, attempt_no, worker_id, cpu_millis, memory_mib, accelerators,
-                                                  lease_expires_at)
+                                                  lease_expires_at, trace_parent)
                         VALUES (:jobId, :attemptNo, :workerId, :cpu, :memory, :accelerators,
-                                now() + make_interval(secs => :leaseSeconds))
+                                now() + make_interval(secs => :leaseSeconds), :traceParent)
                         RETURNING id
                         """)
                 .param("jobId", job.id())
@@ -109,6 +112,7 @@ public class JobPlacement {
                 .param("memory", job.resources().memoryMib())
                 .param("accelerators", job.resources().accelerators())
                 .param("leaseSeconds", leaseDuration.toMillis() / 1000.0)
+                .param("traceParent", traceParent)
                 .query(UUID.class)
                 .single();
         var updated =

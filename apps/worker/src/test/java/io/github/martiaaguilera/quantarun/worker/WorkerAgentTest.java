@@ -12,6 +12,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import io.github.martiaaguilera.quantarun.worker.chaos.ChaosInjector;
 import io.github.martiaaguilera.quantarun.worker.controlplane.ControlPlaneClient;
 import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
+import io.github.martiaaguilera.quantarun.worker.execution.AttemptTelemetry;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
@@ -68,6 +69,7 @@ class WorkerAgentTest {
                         new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
                         new AttemptExecutor.HttpSettings(List.of(), Duration.ofSeconds(1)),
                         ChaosInjector.disabled(),
+                        AttemptTelemetry.noop(),
                         RandomGenerator.of("L64X128MixRandom")),
                 settings,
                 chaos,

@@ -10,6 +10,8 @@ import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerNotFoundExc
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerRegistry;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.ChaosFault;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -47,16 +49,19 @@ public class ChaosExperiments {
     private final ChaosProperties properties;
     private final WorkerRegistry workers;
     private final JobQueries jobs;
+    private final MeterRegistry meters;
 
     ChaosExperiments(
             ChaosExperimentRepository experiments,
             ChaosProperties properties,
             WorkerRegistry workers,
-            JobQueries jobs) {
+            JobQueries jobs,
+            MeterRegistry meters) {
         this.experiments = experiments;
         this.properties = properties;
         this.workers = workers;
         this.jobs = jobs;
+        this.meters = meters;
     }
 
     @Transactional
@@ -102,11 +107,18 @@ public class ChaosExperiments {
             return List.of();
         }
         var delivered = experiments.deliver(workerId);
-        delivered.forEach(experiment -> log.atWarn()
-                .addKeyValue("experimentId", experiment.id())
-                .addKeyValue("fault", experiment.fault())
-                .addKeyValue("workerId", workerId)
-                .log("Chaos fault delivered"));
+        for (var experiment : delivered) {
+            log.atWarn()
+                    .addKeyValue("experimentId", experiment.id())
+                    .addKeyValue("fault", experiment.fault())
+                    .addKeyValue("workerId", workerId)
+                    .log("Chaos fault delivered");
+            Counter.builder("quantarun.chaos.faults.delivered")
+                    .description("Chaos faults handed to a worker")
+                    .tag("fault", experiment.fault().name())
+                    .register(meters)
+                    .increment();
+        }
         return delivered.stream().map(ChaosExperiment::toDirective).toList();
     }
 

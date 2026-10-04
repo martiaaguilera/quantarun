@@ -42,7 +42,9 @@ management:
   tracing:
     sampling:
       probability: 1.0
-  # OTLP export is opt-in until the collector joins the stack (Phase 10); otherwise every node logs connection errors.
+  # Traces are exported only when management.opentelemetry.tracing.export.otlp.endpoint is set, which
+  # docker-compose.observability.yml does. Metrics are scraped by Prometheus; OTLP metrics and logs stay opt-in, so a
+  # node without a collector does not log connection errors.
   otlp:
     metrics:
       export:

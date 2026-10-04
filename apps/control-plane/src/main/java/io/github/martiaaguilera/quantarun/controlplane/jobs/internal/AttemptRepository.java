@@ -27,8 +27,19 @@ public class AttemptRepository {
             int memoryMib,
             int accelerators) {}
 
+    /** @param queueWait from the job becoming runnable to this claim, on the database clock. */
     public record ClaimedAttempt(
-            UUID id, UUID jobId, int attemptNo, String workloadType, ObjectNode payload, int timeoutSeconds) {}
+            UUID id,
+            UUID jobId,
+            int attemptNo,
+            String workloadType,
+            ObjectNode payload,
+            int timeoutSeconds,
+            @Nullable String traceParent,
+            Duration queueWait) {}
+
+    /** @param startedAt null when the attempt ended before a worker claimed it. */
+    public record Ended(java.time.@Nullable Instant startedAt, java.time.Instant finishedAt) {}
 
     private final JdbcClient jdbc;
     private final JsonMapper json;
@@ -52,9 +63,11 @@ public class AttemptRepository {
                                 ORDER BY assigned_at
                                 LIMIT :limit
                                 FOR UPDATE SKIP LOCKED)
-                            RETURNING id, job_id, attempt_no
+                            RETURNING id, job_id, attempt_no, trace_parent
                         )
-                        SELECT c.id, c.job_id, c.attempt_no, j.workload_type, j.payload, j.timeout_seconds
+                        SELECT c.id, c.job_id, c.attempt_no, j.workload_type, j.payload, j.timeout_seconds,
+                               c.trace_parent,
+                               greatest(0, extract(epoch FROM now() - j.available_at) * 1000)::bigint AS queue_wait_ms
                         FROM claimed c JOIN jobs j ON j.id = c.job_id
                         ORDER BY c.attempt_no, c.id
                         """)
@@ -66,7 +79,9 @@ public class AttemptRepository {
                         rs.getInt("attempt_no"),
                         rs.getString("workload_type"),
                         (ObjectNode) json.readTree(rs.getString("payload")),
-                        rs.getInt("timeout_seconds")))
+                        rs.getInt("timeout_seconds"),
+                        rs.getString("trace_parent"),
+                        Duration.ofMillis(rs.getLong("queue_wait_ms"))))
                 .list();
     }
 
@@ -144,18 +159,19 @@ public class AttemptRepository {
                 rs.getInt("accelerators"));
     }
 
-    public void finish(
+    public Ended finish(
             UUID attemptId,
             AttemptStatus status,
             @Nullable String failureClass,
             @Nullable String failureMessage,
             @Nullable String result,
             String retryDecision) {
-        jdbc.sql("""
+        return jdbc.sql("""
                         UPDATE job_attempts
                         SET status = :status, finished_at = now(), failure_class = :failureClass,
                             failure_message = :message, result = CAST(:result AS jsonb), retry_decision = :decision
                         WHERE id = :id AND status IN ('ASSIGNED', 'RUNNING')
+                        RETURNING started_at, finished_at
                         """)
                 .param("status", status.name())
                 .param("failureClass", failureClass)
@@ -163,7 +179,19 @@ public class AttemptRepository {
                 .param("result", result)
                 .param("decision", retryDecision)
                 .param("id", attemptId)
-                .update();
+                .query((rs, row) ->
+                        new Ended(JobRepository.instant(rs, "started_at"), JobRepository.instant(rs, "finished_at")))
+                .optional()
+                .orElseThrow(() -> new IllegalStateException("Attempt " + attemptId + " was not active when finished"));
+    }
+
+    @Nullable
+    public String traceParent(UUID attemptId) {
+        return jdbc.sql("SELECT trace_parent FROM job_attempts WHERE id = :id")
+                .param("id", attemptId)
+                .query(String.class)
+                .optional()
+                .orElse(null);
     }
 
     /**
@@ -217,7 +245,8 @@ public class AttemptRepository {
             @Nullable String failureClass,
             @Nullable String failureMessage,
             @Nullable String retryDecision,
-            tools.jackson.databind.@Nullable JsonNode result) {}
+            tools.jackson.databind.@Nullable JsonNode result,
+            @Nullable String traceParent) {}
 
     /**
      * Attempts a worker held at some point during [from, to]: assigned by {@code to} and not finished before
@@ -252,7 +281,8 @@ public class AttemptRepository {
     public List<AttemptView> findByJob(UUID jobId) {
         return jdbc.sql("""
                         SELECT id, attempt_no, worker_id, status, assigned_at, started_at, finished_at,
-                               lease_expires_at, lease_renewals, failure_class, failure_message, retry_decision, result
+                               lease_expires_at, lease_renewals, failure_class, failure_message, retry_decision, result,
+                               trace_parent
                         FROM job_attempts WHERE job_id = :jobId ORDER BY attempt_no
                         """)
                 .param("jobId", jobId)
@@ -269,7 +299,8 @@ public class AttemptRepository {
                         rs.getString("failure_class"),
                         rs.getString("failure_message"),
                         rs.getString("retry_decision"),
-                        rs.getString("result") == null ? null : json.readTree(rs.getString("result"))))
+                        rs.getString("result") == null ? null : json.readTree(rs.getString("result")),
+                        rs.getString("trace_parent")))
                 .list();
     }
 }

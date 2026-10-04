@@ -51,7 +51,8 @@ public class JobAttempts {
             String workloadType,
             Map<String, Object> payload,
             int timeoutSeconds,
-            @Nullable CommittedStage lastCheckpoint) {}
+            @Nullable CommittedStage lastCheckpoint,
+            @Nullable String traceParent) {}
 
     public record CommittedStage(int stageIndex, Map<String, Object> result) {}
 
@@ -97,6 +98,8 @@ public class JobAttempts {
     private final WorkerCapacity capacity;
     private final WorkerProperties workerProperties;
     private final RetryPolicy retryPolicy;
+    private final JobTracing tracing;
+    private final JobMetrics metrics;
     private final JsonMapper json;
     private final RandomGenerator random = RandomGenerator.getDefault();
 
@@ -108,6 +111,8 @@ public class JobAttempts {
             WorkerCapacity capacity,
             WorkerProperties workerProperties,
             RetryPolicy retryPolicy,
+            JobTracing tracing,
+            JobMetrics metrics,
             JsonMapper json) {
         this.attempts = attempts;
         this.checkpoints = checkpoints;
@@ -116,6 +121,8 @@ public class JobAttempts {
         this.capacity = capacity;
         this.workerProperties = workerProperties;
         this.retryPolicy = retryPolicy;
+        this.tracing = tracing;
+        this.metrics = metrics;
         this.json = json;
     }
 
@@ -140,6 +147,7 @@ public class JobAttempts {
                         "resume", lastCheckpoint == null ? "from zero" : "after stage " + lastCheckpoint.stageIndex());
             }
             events.append(job.id(), attempt.id(), JobEventType.STARTED, details);
+            metrics.started(attempt.workloadType(), attempt.queueWait());
             result.add(new Claimed(
                     attempt.id(),
                     attempt.jobId(),
@@ -147,7 +155,8 @@ public class JobAttempts {
                     attempt.workloadType(),
                     toMap(attempt.payload()),
                     attempt.timeoutSeconds(),
-                    lastCheckpoint));
+                    lastCheckpoint,
+                    attempt.traceParent()));
         }
         return result;
     }
@@ -258,6 +267,7 @@ public class JobAttempts {
         var expired = attempts.lockExpired(limit);
         for (var attempt : expired) {
             endAttempt(attempt, AttemptStatus.LOST, FailureClass.WORKER_LOST, "lease expired", null, null);
+            tracing.attemptLost(attempts.traceParent(attempt.id()), attempt.id(), attempt.workerId());
             log.atWarn()
                     .addKeyValue("attemptId", attempt.id())
                     .addKeyValue("jobId", attempt.jobId())
@@ -312,7 +322,7 @@ public class JobAttempts {
             decisionText = decision.describe();
         }
 
-        attempts.finish(
+        var ended = attempts.finish(
                 attempt.id(),
                 endStatus,
                 failureClass == null ? null : failureClass.name(),
@@ -324,6 +334,19 @@ public class JobAttempts {
         var delay = decision instanceof RetryPolicy.Decision.Retry(var retryDelay) ? retryDelay : null;
         jobs.applyAttemptOutcome(job.id(), job.status(), nextJobStatus, delay);
         appendOutcomeEvents(attempt, endStatus, failureClass, message, nextJobStatus, decisionText);
+        metrics.attemptEnded(
+                job.workloadType(),
+                endStatus,
+                failureClass == null ? null : failureClass.name(),
+                decision == null
+                        ? JobMetrics.Decision.NONE
+                        : (nextJobStatus == JobStatus.RETRY_WAIT
+                                ? JobMetrics.Decision.RETRY
+                                : JobMetrics.Decision.FINAL),
+                ended.startedAt() == null ? null : Duration.between(ended.startedAt(), ended.finishedAt()));
+        if (nextJobStatus.isFinal()) {
+            metrics.finished(job, nextJobStatus, ended.finishedAt());
+        }
         return nextJobStatus;
     }
 

@@ -84,7 +84,8 @@ class ExecutionController {
                                 ? null
                                 : new WorkerProtocol.Checkpoint(
                                         claimed.lastCheckpoint().stageIndex(),
-                                        claimed.lastCheckpoint().result())))
+                                        claimed.lastCheckpoint().result()),
+                        claimed.traceParent()))
                 .toList();
         return new WorkerProtocol.ClaimResponse(assignments);
     }
