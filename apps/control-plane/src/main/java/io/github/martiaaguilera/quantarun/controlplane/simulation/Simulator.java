@@ -193,7 +193,7 @@ final class Simulator {
                 systemVirtualTime);
 
         var started = System.nanoTime();
-        var plan = PlacementPlanner.plan(snapshot, policy);
+        var plan = PlacementPlanner.placementsOnly(snapshot, policy);
         metrics.planningNanos(System.nanoTime() - started);
 
         virtualTimes.putAll(plan.virtualTimes());
