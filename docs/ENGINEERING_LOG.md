@@ -2,6 +2,24 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-06: The security review read every endpoint against the threat list
+The Phase 14 review listed every mapping with the caller check it makes, then asked of each one: who may call it,
+what can they read, what does it cost. Authentication had no gaps: a mapping that escapes the filter fails loudly
+instead of running anonymously. Authorization had three, all on things that had grown later than the rule:
+- `/api/v1/workers` was readable by any project key, against SPEC §12, while the overview hid the same fleet from
+  projects. The console had never asked for it as a project, which is why nobody noticed.
+- Simulations, added in Phase 8 as "synchronous, a few seconds", became a denial-of-service lever once Phase 13
+  measured them at 12 s of a core for the largest request. They are now bounded to two at a time.
+- The event stream's global cap of 50 let one project hold every slot.
+
+Checking the new Content-Security-Policy against the live console found an older bug. The stream sent no response
+headers until its first write, so on an idle system the console showed "Connecting" for up to 15 s, until the
+heartbeat. A comment line on open fixes it. The CSP itself broke nothing: React sets styles through the DOM, which
+`style-src 'self'` does not restrict.
+
+The automated scan the project rules ask for at this checkpoint needs the owner's go-ahead for its cost. It has not
+run, and THREAT_MODEL.md says so.
+
 ## 2026-10-06: Queue wait was three timers
 `benchmarks/e2e/bench.py` reads every job's timestamps from PostgreSQL after the run, so the driver's own latency does
 not count. The baseline matched the arithmetic of the polling intervals almost exactly:
