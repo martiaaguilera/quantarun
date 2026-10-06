@@ -49,10 +49,12 @@ class SimulationController {
 
     private final SimulationRunRepository runs;
     private final JsonMapper json;
+    private final SimulationAdmission admission;
 
-    SimulationController(SimulationRunRepository runs, JsonMapper json) {
+    SimulationController(SimulationRunRepository runs, JsonMapper json, SimulationAdmission admission) {
         this.runs = runs;
         this.json = json;
+        this.admission = admission;
     }
 
     @GetMapping("/scenarios")
@@ -67,8 +69,19 @@ class SimulationController {
     RunResponse run(Caller caller, @Valid @RequestBody RunRequest request) {
         var policies = request.policies() == null ? List.of(SchedulingPolicy.values()) : request.policies();
         var jobCount = request.jobCount() == null ? Scenario.DEFAULT_JOBS : request.jobCount();
-        // Simulated outside any transaction: only the finished result is written, in one short statement.
-        var result = Simulations.run(request.scenario(), request.seed(), jobCount, policies);
+        if (!admission.tryEnter()) {
+            throw new ApiException(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "SIMULATION_BUSY",
+                    "The maximum number of simulations is already running. Retry when one finishes.");
+        }
+        SimulationResult result;
+        try {
+            // Simulated outside any transaction: only the finished result is written, in one short statement.
+            result = Simulations.run(request.scenario(), request.seed(), jobCount, policies);
+        } finally {
+            admission.leave();
+        }
         var stored = runs.insert(
                 request.scenario().name(),
                 request.seed(),
