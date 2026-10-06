@@ -1,5 +1,9 @@
 # QuantaRun
 
+[![CI](https://github.com/martiaaguilera/quantarun/actions/workflows/ci.yml/badge.svg)](https://github.com/martiaaguilera/quantarun/actions/workflows/ci.yml)
+![Java 25](https://img.shields.io/badge/Java-25-orange)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A control plane for scheduling, executing, recovering, replaying and stress-testing AI workloads on a fleet of
 heterogeneous workers. PostgreSQL coordinates everything; OpenTelemetry shows what happened. It runs locally with
 Docker Compose, at zero cost, with no API keys.
@@ -47,12 +51,25 @@ correctly and shows its work.
 
 ## Architecture
 
-```
- tenants (API keys) ─┐
- operator (token)  ──┼──▶ nginx ──▶ control plane ──JDBC──▶ PostgreSQL 18
-                     │    (console)  scheduler, leases,         (state, locks,
- workers ────────────┴── HTTP ──▶   reaper, simulator,          constraints)
-   claim · heartbeat · report       chaos, SSE stream
+```mermaid
+flowchart LR
+    tenant["Tenants<br/>(project API keys)"] --> nginx
+    operator["Operator<br/>(console, admin token)"] --> nginx
+    nginx["nginx<br/>console + /api proxy"] --> cp
+    subgraph cp["Control plane (Spring Boot 4.1, modular monolith)"]
+        direction TB
+        api["Jobs, projects, keys API<br/>SSE event stream"]
+        sched["Scheduler<br/>6 pure policies"]
+        reaper["Lease reaper"]
+        sim["Simulator<br/>(same planner)"]
+        chaos["Chaos lab"]
+    end
+    cp -- "JDBC: SKIP LOCKED, FOR UPDATE,<br/>CHECK constraints" --> pg[("PostgreSQL 18<br/>state + coordination")]
+    w1["worker-cpu"] -- "HTTP: register, heartbeat,<br/>claim, checkpoint, report" --> cp
+    w2["worker-mixed"] --> cp
+    w3["worker-accel"] --> cp
+    cp -. "OTLP traces, metrics<br/>(optional overlay)" .-> otel["Jaeger · Prometheus"]
+    w1 -.-> otel
 ```
 
 - **Control plane** (Java 25, Spring Boot 4.1): a modular monolith whose module boundaries Spring Modulith verifies.
@@ -142,7 +159,8 @@ are recorded only after commit, so a rolled-back placement counts nothing. Logs 
 
 ## Testing
 
-- **417 Java tests** (325 control plane, 92 worker) and **25 web tests**. Everything that touches SQL, locking or
+- **417 Java tests** (325 control plane, 92 worker), **25 web unit tests** and **5 Playwright end-to-end tests** that
+  drive the console of a running stack (sign-in, the fleet, a job followed to success, revive, policy replay). Everything that touches SQL, locking or
   transactions runs against real PostgreSQL 18 in Testcontainers; the database is never mocked.
 - **Race tests** for every concurrency feature: 16 concurrent schedulers per policy, completion racing lease expiry,
   500 duplicate submissions, heartbeats racing the reaper, checkpoints racing recovery.
@@ -175,7 +193,7 @@ docker compose up --build --wait
 ```
 
 - Console: <http://localhost:3000>. Sign in with `QUANTARUN_ADMIN_TOKEN` from `.env`.
-- OpenAPI document: <http://localhost:3000/v3/api-docs>.
+- API guide: [docs/API.md](docs/API.md). OpenAPI document: <http://localhost:8080/v3/api-docs>.
 - Five-minute walkthrough: [docs/DEMO.md](docs/DEMO.md).
 - With traces and metrics: `docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build --wait`.
   Jaeger runs on <http://localhost:16686> and Prometheus on <http://localhost:9090>.
@@ -186,12 +204,15 @@ Development:
 ```bash
 ./mvnw verify                          # format check, compile, unit + Testcontainers tests (Docker required)
 cd apps/web && npm ci && npm run check # typecheck, lint, test, build
+cd apps/web && npx playwright install chromium && npm run e2e  # against the running stack
 ```
+
+How to contribute, and the rules a change must follow: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Technology
 
 Java 25, Spring Boot 4.1, Spring Modulith, `JdbcClient`, Flyway and PostgreSQL 18; Micrometer and OpenTelemetry;
-React 19, TypeScript 6 (strict), TanStack Query and Vite 8; Testcontainers, JUnit 6 and Vitest; Docker Compose, nginx
+React 19, TypeScript 6 (strict), TanStack Query and Vite 8; Testcontainers, JUnit 6, Vitest and Playwright; Docker Compose, nginx
 and GitHub Actions. The reasons for each choice are in
 [ADR-0006](docs/adr/0006-development-environment-and-toolchain.md).
 
@@ -207,6 +228,25 @@ and GitHub Actions. The reasons for each choice are in
 | Chaos faults pulled in heartbeats | No inbound "break yourself" endpoint to secure | [ADR-0007](docs/adr/0007-chaos-faults-pulled-in-heartbeats.md) |
 
 What went wrong along the way, and what each fix cost, is in [ENGINEERING_LOG.md](docs/ENGINEERING_LOG.md).
+
+## Documentation
+
+| Document | What it answers |
+|---|---|
+| [SPEC.md](docs/SPEC.md) | What the system guarantees: states, semantics, phases |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it is built, module by module |
+| [INVARIANTS.md](docs/INVARIANTS.md) | The 22 invariants and the test that proves each |
+| [SCHEDULER.md](docs/SCHEDULER.md) | The scheduling cycle, policies, fairness, quotas, query plans |
+| [FAILURE_SEMANTICS.md](docs/FAILURE_SEMANTICS.md) | What every failure looks like and how it is recovered |
+| [SIMULATION.md](docs/SIMULATION.md) · [CHAOS.md](docs/CHAOS.md) | Policy replay and fault injection, with measured results |
+| [OBSERVABILITY.md](docs/OBSERVABILITY.md) | Traces, metrics and logs |
+| [API.md](docs/API.md) | Credentials, endpoints, workloads, error codes, the worker protocol |
+| [THREAT_MODEL.md](docs/THREAT_MODEL.md) · [SECURITY.md](SECURITY.md) | Threats, mitigations, residual risks, reporting |
+| [BENCHMARKS.md](docs/BENCHMARKS.md) | Measurements with date, commit, hardware and command |
+| [ENGINEERING_LOG.md](docs/ENGINEERING_LOG.md) | What went wrong and what each fix cost |
+| [FINAL_REVIEW.md](docs/FINAL_REVIEW.md) | The release review and its open findings |
+| [DEMO.md](docs/DEMO.md) · [INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md) · [PORTFOLIO.md](docs/PORTFOLIO.md) | Walkthrough and talking points |
+| [docs/adr](docs/adr) | Architecture decisions |
 
 ## Known limitations
 
