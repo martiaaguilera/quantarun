@@ -149,22 +149,30 @@ class ConcurrencyTortureTest {
 
     /** Lease expiry and retry backoff happen in time; moving the clock in SQL makes them happen every few ms. */
     private void advanceTime() throws InterruptedException {
+        // Every statement here skips rows that are locked instead of waiting for them. The clock is test scaffolding,
+        // not a participant: an UPDATE over several rows locks them in whatever order its plan produces, and waiting
+        // in that order deadlocked against the product's id-ordered locks in CI (2026-10-06). A skipped row simply
+        // ages on a later tick.
         if (chaos.get() && ThreadLocalRandom.current().nextInt(3) == 0) {
             count("leasesExpired", jdbc.sql("""
                                     UPDATE job_attempts SET lease_expires_at = now() - interval '1 second'
                                     WHERE id IN (SELECT id FROM job_attempts WHERE status IN ('ASSIGNED', 'RUNNING')
-                                                 ORDER BY random() LIMIT 2)
+                                                 ORDER BY random() LIMIT 2 FOR UPDATE SKIP LOCKED)
                                     """).update());
         }
         // The attempts of crashed registrations would otherwise wait out a real lease.
         jdbc.sql("""
-                        UPDATE job_attempts a SET lease_expires_at = now() - interval '1 second'
-                        FROM workers w
-                        WHERE a.worker_id = w.id AND w.lifecycle = 'OFFLINE' AND a.status IN ('ASSIGNED', 'RUNNING')
-                          AND a.lease_expires_at > now()
+                        UPDATE job_attempts SET lease_expires_at = now() - interval '1 second'
+                        WHERE id IN (SELECT a.id FROM job_attempts a JOIN workers w ON w.id = a.worker_id
+                                     WHERE w.lifecycle = 'OFFLINE' AND a.status IN ('ASSIGNED', 'RUNNING')
+                                       AND a.lease_expires_at > now()
+                                     FOR UPDATE OF a SKIP LOCKED)
                         """).update();
-        jdbc.sql("UPDATE jobs SET available_at = now() WHERE status = 'RETRY_WAIT' AND available_at > now()")
-                .update();
+        jdbc.sql("""
+                        UPDATE jobs SET available_at = now()
+                        WHERE id IN (SELECT id FROM jobs WHERE status = 'RETRY_WAIT' AND available_at > now()
+                                     FOR UPDATE SKIP LOCKED)
+                        """).update();
         Thread.sleep(5);
     }
 
