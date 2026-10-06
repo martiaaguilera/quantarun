@@ -97,6 +97,25 @@ time was lock waiting, not I/O.
 | FIFO (`available_at, id`) | 0.25 ms (index scan) | unchanged |
 | PRIORITY (`priority DESC, available_at, id`) | 10.2 ms (sort of the whole backlog) | 0.15–0.24 ms (V11 index) |
 
+## Console overview at a million jobs
+
+The overview's four queries, run with `psql \timing` in the order the repository issues them, as the operator (no
+project filter). Three runs each. Same hardware as above, 2026-10-06.
+
+- **Data:** 1,000,000 finished jobs spread over 30 days, each with one attempt, plus 2,000 queued jobs.
+- **Database:** a scratch PostgreSQL 18.6 container with migrations V1–V11, then V12 applied, then `ANALYZE`.
+
+| Query | Before (`64520bb`) | After (`cf16a02`, V12) |
+|---|---|---|
+| Counts by status | 81–110 ms (all statuses, parallel seq scan) | 4.6–6.1 ms (unfinished statuses only) |
+| Finished in the last hour | 72–87 ms | 1.6 ms |
+| Retries in the last hour | 50–61 ms | 3.0–3.8 ms |
+| Time-to-start p95, last 15 minutes | 56–65 ms | 2.2–3.1 ms |
+| **Whole overview** | **259–318 ms** | **11.5–14.6 ms** |
+
+The V12 indexes take 21 MB, 8 KB and 21 MB at this size. The console requests an overview at most once a second per
+open tab, while events flow.
+
 ## Simulation
 
 `POST /api/v1/simulations` with `{"scenario":"BURST","seed":7,"jobCount":20000,"policies":[...]}`, timed with
@@ -113,7 +132,7 @@ all 8 scenarios × 6 policies (seed 42, 1,000 jobs).
 ## Not measured
 
 - Multiple control-plane instances. The scheduler and claim wake-ups are in-process; another instance falls back to
-  its 500 ms recheck. That case was not benchmarked.
+  its 500 ms recheck. Two instances were run live for correctness (ENGINEERING_LOG, 2026-10-06), not timed.
 - Throughput beyond 10 slots, and jobs shorter than 100 ms.
 - The compose stack inside Docker networking. These runs used host processes against PostgreSQL in Docker.
 - A JMH micro-benchmark of the planner. The JFR profile and the end-to-end timing were enough to choose and verify

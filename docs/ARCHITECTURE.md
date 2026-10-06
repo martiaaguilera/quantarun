@@ -28,8 +28,17 @@ flowchart LR
 | PostgreSQL | System of record and coordination (locks, constraints) | ADR-0001 |
 
 Several control-plane instances may run against one database. Every coordination step goes through
-PostgreSQL row locks and conditional writes, never through JVM memory. The demo runs one instance,
-while the tests run several concurrent schedulers.
+PostgreSQL row locks and conditional writes, never through JVM memory. The demo runs one instance, and the tests run
+several concurrent schedulers. Two instances were also run live, with a worker attached to each, duplicate
+submissions sent to both and a worker killed mid-burst (ENGINEERING_LOG, 2026-10-06).
+
+Some things are per instance, by design:
+- **Wake-ups.** A placement wakes only the waiting claims on its own instance. A worker attached to another instance
+  finds the work on its claim's 500 ms recheck.
+- **Bounds.** The simulation bound (2 at once) and the event-stream caps (50, and 5 per project) apply to each
+  instance, so N instances allow N times as many.
+- **Lease catch-up.** Each instance catches up leases after its own deafness. One instance's outage extends every
+  lease, which delays recovery but loses no work.
 
 ## 2. Control-plane modules
 

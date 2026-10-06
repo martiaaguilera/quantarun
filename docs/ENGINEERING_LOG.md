@@ -2,6 +2,30 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-06: The final review measured what it doubted
+The Phase 15 review (FINAL_REVIEW.md) went through the brief's questions and checked each answer against something
+that ran, not against the docs. Three answers changed.
+
+- **The overview read all of history.** Its counts by status covered every job ever submitted, and its last-hour
+  windows had no index. On a million-job copy of the schema, an overview cost 259–318 ms of database time, and the
+  console asks for one up to once a second while events flow. It now counts unfinished jobs through their partial
+  indexes and finished jobs over the last hour, and V12 indexes the windows: 12–15 ms on the same data. The
+  all-time totals were dropped rather than cached. They are history, not operations, and nothing on the overview
+  needed them.
+- **Short ids were timestamps.** The console showed the first eight characters of each id. For UUIDv7 those encode
+  the creation time, so a burst of jobs, or workers started together, all showed the same short id. Nobody noticed
+  in Phase 11 because the screenshots had few rows. It now shows the random tail.
+- **"Several control-plane instances may run against one database" had never been run.** It was run here: two
+  control planes on one database, one worker attached to each, 300 idempotency keys each sent to both instances at
+  once, and a worker killed mid-burst. Every job succeeded once, each key gave one job, and the four lost attempts
+  were recovered, two by each instance, with `SKIP LOCKED` splitting the batch without coordination. What does not
+  carry over is stated in ARCHITECTURE.md: wake-up signals, the simulation cap and the stream caps are per instance.
+
+The clean-machine check could not be reproduced in the development container: the image build's Maven download
+fails TLS behind the sandbox's intercepting proxy. The evidence for a clean start is CI, which runs the README's
+quick start on a fresh runner for every pull request. The demo stack here ran the same compose services from jars
+built on the host.
+
 ## 2026-10-06: The security review read every endpoint against the threat list
 The Phase 14 review listed every mapping with the caller check it makes, then asked of each one: who may call it,
 what can they read, what does it cost. Authentication had no gaps: a mapping that escapes the filter fails loudly
@@ -196,7 +220,7 @@ held, so ids follow the lock order. The same caveat applies to every timeline bu
 transactions that race on one row, the event id is the order and `occurred_at` is approximate. The events API
 already orders by id.
 
-## 2026-10-02 — An unexplained failure of the weighted fair-share test (open)
+## 2026-10-02 — An unexplained failure of the weighted fair-share test (open; not recurred in 75 repeated runs)
 `FairShareSchedulingTest.weightsSetTheShareOfService_acrossCycles` failed once in a full `./mvnw verify` on the Phase 8
 branch, with 200 of the expected 320 jobs served. That is 25 full rounds of 8, after which nothing more finished. The
 run was about 3× slower than usual. The test passed in 23 later executions: 3 alone, 5 in full suites, and 15 in a
