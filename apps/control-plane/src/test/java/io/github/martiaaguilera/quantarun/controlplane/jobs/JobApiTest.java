@@ -116,6 +116,20 @@ class JobApiTest {
                     .andExpect(status().isUnauthorized());
         }
 
+        /** The secret is shown once, at issue; listing a project's keys returns only the lookup prefix. */
+        @Test
+        void listingKeys_neverReturnsTheSecret() throws Exception {
+            var body = mvc.perform(get("/api/v1/projects/" + project.id() + "/api-keys")
+                            .header(HttpHeaders.AUTHORIZATION, ApiTestSupport.adminBearer()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$[0].prefix").isString())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+
+            assertThat(body).doesNotContain(project.apiKey().substring(12)).doesNotContain("secret");
+        }
+
         @Test
         void storedKeyMaterial_isHashNotPlaintext() {
             var stored = jdbc.sql("SELECT secret_hash FROM api_keys WHERE project_id = :p")
