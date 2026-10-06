@@ -19,7 +19,7 @@ hypothetical large deployment.
 | 6 | `PRIORITY` starves low priorities under a steady stream of urgent work. There is no ageing. | Low (by design) | Documented as the policy's trade-off in SCHEDULER.md; `FAIR_SHARE` and `DEADLINE` are the alternatives, and the policy lab shows the cost | SCHEDULER.md, SIMULATION.md |
 | 7 | The lease reaper logs "attempt recovered" inside its transaction, so a rolled-back batch would leave a log line for a recovery that did not happen. Spans and metrics are already recorded after commit (I20); this log line is not. | Low | Accepted: a rollback here means the database failed, which the reaper also logs as a warning on the same tick | Code reading, `JobAttempts.recoverExpiredLeases` |
 | 8 | The policy lab's charts labelled only the first of several tied policies as best. | Low | Fixed in `e4e0b05` | `charts.test.tsx` fails without the fix |
-| 9 | `FairShareSchedulingTest.weightsSetTheShareOfService_acrossCycles` failed once in Phase 8 and was never explained. | Low (test) | Still open. It has not recurred in 75 repeated race-suite runs since (INVARIANTS.md) or in any CI run. The test asserts every round, so a recurrence names the step that stopped | ENGINEERING_LOG, 2026-10-02 |
+| 9 | `FairShareSchedulingTest.weightsSetTheShareOfService_acrossCycles` failed once in Phase 8 and was never explained. | Low (test) | Explained and fixed during the release verification: on a slow machine the test workers' only heartbeat aged past the 7 s LATE threshold, so they correctly stopped receiving work. The tests now heartbeat before each cycle; thresholds unchanged | ENGINEERING_LOG, 2026-10-06; full `./mvnw verify` green |
 | 10 | The automated Claude Security scan that the project rules ask for before release has not run. | Process gap | Approved by the owner, but the development environment lacks the workflow runtime it needs. A second manual review ran instead and found three defects in what a tenant's job can make a worker do, all fixed (THREAT_MODEL.md, "Findings of the release review") | – |
 
 No finding is high or critical. The two medium defects in code (1, 2) are fixed.
@@ -127,7 +127,7 @@ SPEC.md for semantics; ARCHITECTURE.md for structure; INVARIANTS.md for guarante
 decisions; ENGINEERING_LOG.md for what went wrong and why. DEMO.md walks through the system in five minutes.
 
 **Would I approve this pull request?** Yes, with the open items above recorded rather than hidden: the pending
-automated scan, unbounded history, and one unexplained test failure that has not recurred.
+automated scan and unbounded history. The one test failure that was open is explained and fixed (finding 9).
 
 ## Extra questions from the v1 additions
 

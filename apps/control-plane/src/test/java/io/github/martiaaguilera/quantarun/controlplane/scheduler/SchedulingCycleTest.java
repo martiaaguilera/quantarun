@@ -172,6 +172,9 @@ class SchedulingCycleTest {
 
         var errors = runConcurrently(16, () -> {
             for (int round = 0; round < 50; round++) {
+                // Heartbeats touch only worker_heartbeats, never the worker rows the cycles lock, so keeping workers
+                // alive here adds no contention to the race under test.
+                jdbc.sql("UPDATE worker_heartbeats SET last_seen_at = now()").update();
                 if (cycle.runCycle(policy).placed() == 0) {
                     break;
                 }
