@@ -42,8 +42,14 @@ class WorkerController {
         this.properties = properties;
     }
 
+    /**
+     * The fleet is shared by every tenant, so its shape (names, labels, capacity, what is reserved right now) is the
+     * operator's view, as SPEC §12 says; a project learns which workers were considered for its own jobs from those
+     * jobs' decision records. Project keys could read it before Phase 14's review.
+     */
     @GetMapping
     List<WorkerResponse> list(Caller caller, @RequestParam(required = false) @Nullable WorkerLifecycle lifecycle) {
+        caller.requireAdmin();
         return workers.findAll(lifecycle, MAX_WORKERS_LISTED).stream()
                 .map(this::toResponse)
                 .toList();
@@ -51,6 +57,7 @@ class WorkerController {
 
     @GetMapping("/{workerId}")
     WorkerResponse get(Caller caller, @PathVariable UUID workerId) {
+        caller.requireAdmin();
         return toResponse(workers.findById(workerId).orElseThrow(() -> new WorkerNotFoundException(workerId)));
     }
 

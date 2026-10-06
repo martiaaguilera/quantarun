@@ -128,6 +128,18 @@ class ConsoleApiTest {
         get(support.createProject(), "/api/v1/settings").andExpect(status().isForbidden());
     }
 
+    /** The fleet is shared by every tenant: a project key must not read its shape (Phase 14 review). */
+    @Test
+    void workers_areVisibleToOperatorsOnly() throws Exception {
+        var project = support.createProject();
+
+        get(project, "/api/v1/workers").andExpect(status().isForbidden());
+        get(project, "/api/v1/workers/" + UUID.randomUUID()).andExpect(status().isForbidden());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/workers")
+                        .header(HttpHeaders.AUTHORIZATION, ApiTestSupport.adminBearer()))
+                .andExpect(status().isOk());
+    }
+
     @Test
     void session_saysWhoTheCredentialBelongsTo() throws Exception {
         var project = support.createProject();

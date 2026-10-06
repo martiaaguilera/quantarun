@@ -1,6 +1,7 @@
 package io.github.martiaaguilera.quantarun.controlplane.jobs;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -9,6 +10,7 @@ import io.github.martiaaguilera.quantarun.controlplane.ApiTestSupport;
 import io.github.martiaaguilera.quantarun.controlplane.IntegrationTest;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobEventRepository;
 import io.github.martiaaguilera.quantarun.controlplane.security.Caller;
+import io.github.martiaaguilera.quantarun.controlplane.web.ApiException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -61,7 +63,14 @@ class JobEventStreamTest {
     @BeforeEach
     void setUp() {
         stream = new JobEventStream(
-                repository, false, Duration.ofMillis(250), Duration.ofSeconds(5), Duration.ofHours(1), 50, () -> now);
+                repository,
+                false,
+                Duration.ofMillis(250),
+                Duration.ofSeconds(5),
+                Duration.ofHours(1),
+                50,
+                3,
+                () -> now);
         projectA = project("stream-a");
         projectB = project("stream-b");
         jobA = job(projectA);
@@ -202,6 +211,24 @@ class JobEventStreamTest {
         stuck.countDown();
     }
 
+    /**
+     * One project key may hold a bounded number of streams, so a tenant cannot take every slot from the operator's
+     * console (Phase 14 review). Here the per-project limit is 3 and the total 50.
+     */
+    @Test
+    void aProject_cannotHoldMoreThanItsShareOfStreams_butTheOperatorStillConnects() {
+        var member = new Caller.ProjectMember(projectA);
+        for (int i = 0; i < 3; i++) {
+            subscribe(member, null);
+        }
+
+        assertThatThrownBy(() -> subscribe(member, null))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("3 open event streams");
+        subscribe(new Caller.ProjectMember(projectB), null);
+        subscribe(new Caller.Admin(), null);
+    }
+
     /** Over HTTP: text/event-stream, the job events with their ids, and only the caller's own. */
     @Test
     void theEndpoint_streamsTheCallersEvents() throws Exception {
@@ -216,6 +243,8 @@ class JobEventStreamTest {
                         .header("Last-Event-ID", String.valueOf(before)))
                 .andExpect(request().asyncStarted())
                 .andReturn();
+        // The stream opens with a comment at once, so the client knows it is connected before any event or heartbeat.
+        assertThat(result.getResponse().getContentAsString()).startsWith(":connected");
         var mine = event(job, "SUBMITTED");
         event(jobB, "SUBMITTED");
         sharedStream.poll();

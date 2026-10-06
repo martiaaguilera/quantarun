@@ -25,6 +25,9 @@ class SimulationApiTest {
     @Autowired
     JsonMapper json;
 
+    @Autowired
+    SimulationAdmission admission;
+
     @Test
     void run_comparesPolicies_andIsStoredForTheProjectThatAskedForIt() throws Exception {
         var support = new ApiTestSupport(mvc, json);
@@ -52,6 +55,27 @@ class SimulationApiTest {
                 .andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/simulations/" + id).header(HttpHeaders.AUTHORIZATION, ApiTestSupport.adminBearer()))
                 .andExpect(status().isOk());
+    }
+
+    /**
+     * Simulations are CPU-bound and any project key may start one, so only a bounded number run at once; the rest are
+     * refused, not queued (Phase 14 review). The permits are taken directly, so the test does not depend on timing.
+     */
+    @Test
+    void simulationsBeyondTheConcurrencyBound_areRefusedUntilOneFinishes() throws Exception {
+        var request = "{\"scenario\":\"STEADY\",\"seed\":1,\"jobCount\":50,\"policies\":[\"FIFO\"]}";
+        assertThat(admission.tryEnter()).isTrue();
+        assertThat(admission.tryEnter()).isTrue();
+        try {
+            run(ApiTestSupport.adminBearer(), request)
+                    .andExpect(status().isTooManyRequests())
+                    .andExpect(jsonPath("$.code").value("SIMULATION_BUSY"));
+        } finally {
+            admission.leave();
+        }
+        run(ApiTestSupport.adminBearer(), request).andExpect(status().isCreated());
+        admission.leave();
+        run(ApiTestSupport.adminBearer(), request).andExpect(status().isCreated());
     }
 
     /** I15 through the API: the same request twice gives byte-identical deterministic results. */
