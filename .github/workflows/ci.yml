@@ -47,18 +47,41 @@ jobs:
       - run: npm audit --audit-level=high --omit=dev
 
   compose-smoke:
-    name: Docker images and compose smoke test
+    name: Docker images, compose smoke test and console end-to-end tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     needs: [backend, web]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
       - run: cp .env.example .env
       - run: docker compose up --build --detach --wait --wait-timeout 300
       - name: Probe the stack through the web entry point
         run: |
           curl --fail --silent http://127.0.0.1:3000/ > /dev/null
           curl --fail --silent http://127.0.0.1:3000/actuator/health/readiness | grep -q '"UP"'
+      # Playwright drives the console against the stack just started: sign-in, workers, a job followed to success,
+      # a dead job revived, and a policy-lab replay.
+      - name: Console end-to-end tests (Playwright)
+        working-directory: apps/web
+        env:
+          QUANTARUN_E2E_URL: http://127.0.0.1:3000
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run e2e
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 7
       - if: failure()
         run: docker compose logs --no-color
       - if: always()
