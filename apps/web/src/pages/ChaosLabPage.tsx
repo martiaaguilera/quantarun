@@ -242,6 +242,11 @@ export function ExperimentPage() {
       return created && Date.now() - Date.parse(created) < 5 * 60_000 ? 2_000 : false
     },
   })
+  const workers = useQuery({ queryKey: keys.workers, queryFn: ({ signal }) => api.workers(signal) })
+  const workerName = (id: string) => {
+    const worker = workers.data?.find((candidate) => candidate.id === id)
+    return worker ? `${worker.name} (${shortId(id)})` : `worker ${shortId(id)}`
+  }
   const cancel = useMutation({
     mutationFn: () => api.cancelExperiment(experimentId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.experiment(experimentId) }),
@@ -261,7 +266,7 @@ export function ExperimentPage() {
               {humanize(data.fault)} <StatusChip value={data.status} />
             </h1>
             <p className="lede">
-              Aimed at worker <Id value={data.workerId} />
+              Aimed at <span title={data.workerId}>{workerName(data.workerId)}</span>
               {data.jobId && (
                 <>
                   {' '}
@@ -318,7 +323,7 @@ export function ExperimentPage() {
                           </span>
                           {entry.source !== 'JOB' && <span className="story__detail">{entry.detail}</span>}
                           {entry.source === 'JOB' && entry.workerId && (
-                            <span className="story__detail muted">worker {shortId(entry.workerId)}</span>
+                            <span className="story__detail muted">{workerName(entry.workerId)}</span>
                           )}
                         </li>
                       ))}

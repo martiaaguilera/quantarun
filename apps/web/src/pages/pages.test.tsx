@@ -39,8 +39,8 @@ describe('JobsPage', () => {
     renderPage(<JobsPage />, { path: '/jobs' })
 
     // "Retry wait" is also a filter option, so wait for the row itself first.
-    expect(await screen.findByRole('link', { name: '01a106e1' })).toHaveAttribute('href', `/jobs/${job.id}`)
-    const row = screen.getByRole('link', { name: '01a106e1' }).closest('tr')
+    expect(await screen.findByRole('link', { name: '7d517060' })).toHaveAttribute('href', `/jobs/${job.id}`)
+    const row = screen.getByRole('link', { name: '7d517060' }).closest('tr')
     expect(row).toHaveTextContent('Retry wait')
     expect(row).toHaveTextContent('1 / 3')
     expect(row).toHaveTextContent('Placed on worker-cpu by FIFO')
