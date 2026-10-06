@@ -36,19 +36,31 @@ class WorkerLifecycleRunner implements SmartLifecycle {
     public void start() {
         running = true;
         membership = Thread.ofPlatform().name("worker-membership").daemon().start(() -> loop(agent::step));
-        intake = Thread.ofPlatform().name("worker-intake").daemon().start(() -> loop(agent::claimStep));
+        intake = Thread.ofPlatform()
+                .name("worker-intake")
+                .daemon()
+                .start(() -> loop(agent::claimStep, agent::awaitIntake));
     }
 
     private void loop(Supplier<Duration> step) {
+        loop(step, delay -> TimeUnit.MILLISECONDS.sleep(delay.toMillis()));
+    }
+
+    private void loop(Supplier<Duration> step, Pause pause) {
         while (running) {
             var delay = step.get();
             try {
-                TimeUnit.MILLISECONDS.sleep(delay.toMillis());
+                pause.await(delay);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
             }
         }
+    }
+
+    @FunctionalInterface
+    private interface Pause {
+        void await(Duration delay) throws InterruptedException;
     }
 
     @Override

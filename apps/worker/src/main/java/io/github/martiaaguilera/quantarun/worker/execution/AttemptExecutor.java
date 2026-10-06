@@ -197,6 +197,19 @@ public class AttemptExecutor implements AutoCloseable {
         }
     }
 
+    /**
+     * While every slot is busy, waits until one frees or {@code timeout} passes. The intake loop used to sleep its whole
+     * claim interval here, so each finished attempt left its slot empty for up to 500 ms (BENCHMARKS.md). The check
+     * and the wait share the monitor that a finishing attempt notifies after freeing its slot, so no wake-up is lost.
+     */
+    public void awaitFreeSlot(Duration timeout) throws InterruptedException {
+        synchronized (idle) {
+            if (freeSlots() == 0) {
+                TimeUnit.NANOSECONDS.timedWait(idle, timeout.toNanos());
+            }
+        }
+    }
+
     @Override
     public void close() {
         timeouts.shutdownNow();

@@ -13,8 +13,11 @@ import io.github.martiaaguilera.quantarun.controlplane.jobs.JobLifecycle;
 import io.github.martiaaguilera.quantarun.controlplane.scheduler.SchedulingCycle;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerRegistry;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -360,6 +363,54 @@ class WorkerExecutionApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"outcome\":\"SUCCEEDED\"}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    /** A waiting claim with nothing placed answers empty once its wait is over, not at once. */
+    @Test
+    void aWaitingClaim_withNothingPlaced_answersEmptyAfterItsWait() throws Exception {
+        var worker = fixture.worker("patient", 1);
+
+        var started = System.nanoTime();
+        waitingClaim(worker, 1, 400)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.assignments.length()").value(0));
+
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isGreaterThanOrEqualTo(Duration.ofMillis(400));
+    }
+
+    /**
+     * A placement that commits while a claim waits answers that claim at once: the assignment reaches the worker
+     * without waiting for a poll. The wait here is 5 s; the answer must come long before.
+     */
+    @Test
+    void aWaitingClaim_isAnsweredAsSoonAsWorkIsPlacedOnItsWorker() throws Exception {
+        var worker = fixture.worker("eager", 1);
+        var job = fixture.submit(3);
+        var answer = new CompletableFuture<ResultActions>();
+        var started = System.nanoTime();
+        Thread.ofVirtual().start(() -> {
+            try {
+                answer.complete(waitingClaim(worker, 1, 5_000));
+            } catch (Exception e) {
+                answer.completeExceptionally(e);
+            }
+        });
+        // Let the claim find nothing and start waiting before the job is placed.
+        Thread.sleep(200);
+        fixture.place();
+
+        answer.get(4, TimeUnit.SECONDS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.assignments[0].jobId").value(job.toString()));
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(2));
+    }
+
+    private ResultActions waitingClaim(ExecutionFixture.RegisteredWorker worker, int max, int waitMillis)
+            throws Exception {
+        return mvc.perform(post(WorkerProtocol.BASE_PATH + "/claim")
+                .header(HttpHeaders.AUTHORIZATION, worker.bearer())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"maxAssignments\":" + max + ",\"waitMillis\":" + waitMillis + "}"));
     }
 
     private ResultActions claim(ExecutionFixture.RegisteredWorker worker, int max) throws Exception {

@@ -41,15 +41,22 @@ public class JobPlacement {
     }
 
     private final JdbcClient jdbc;
+    private final AssignmentSignal assignmentSignal;
     private final JobRepository jobs;
     private final JobEventRepository events;
     private final JobTracing tracing;
 
-    JobPlacement(JdbcClient jdbc, JobRepository jobs, JobEventRepository events, JobTracing tracing) {
+    JobPlacement(
+            JdbcClient jdbc,
+            JobRepository jobs,
+            JobEventRepository events,
+            JobTracing tracing,
+            AssignmentSignal assignmentSignal) {
         this.jdbc = jdbc;
         this.jobs = jobs;
         this.events = events;
         this.tracing = tracing;
+        this.assignmentSignal = assignmentSignal;
     }
 
     /**
@@ -126,6 +133,7 @@ public class JobPlacement {
             // The row is locked by this transaction, so its status cannot have changed underneath us.
             throw new IllegalStateException("Job " + job.id() + " left the runnable states while locked");
         }
+        assignmentSignal.raiseAfterCommit(workerId);
         events.append(
                 job.id(),
                 attemptId,

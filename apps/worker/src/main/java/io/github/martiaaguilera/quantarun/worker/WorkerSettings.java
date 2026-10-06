@@ -20,6 +20,10 @@ import org.springframework.validation.annotation.Validated;
  * and CPU/memory are the budget this worker will accept, which keeps scheduling demonstrable on any laptop.
  *
  * @param claimInterval how often an idle worker asks for work; with free slots and work waiting it asks again at once.
+ * @param claimWait how long a claim may wait at the control plane for work to be placed on this worker. The claim
+ *     answers as soon as something is placed, so an assignment reaches the worker within milliseconds instead of up to
+ *     one claim interval later (BENCHMARKS.md). Zero turns waiting off and falls back to polling every claim interval.
+ *     Must stay below {@code requestTimeout}.
  * @param shutdownGrace how long a graceful shutdown waits for running attempts before stopping them. Must stay below
  *     {@code spring.lifecycle.timeout-per-shutdown-phase}, or the platform kills the process mid-wait.
  * @param reportAttempts how many unexpected server errors an outcome report or checkpoint may meet before the worker
@@ -45,10 +49,20 @@ public record WorkerSettings(
         @NotNull @DefaultValue("10s") Duration requestTimeout,
         @NotNull @DefaultValue("30s") Duration maxRetryDelay,
         @NotNull @DefaultValue("500ms") Duration claimInterval,
+        @NotNull @DefaultValue("2s") Duration claimWait,
         @NotNull @DefaultValue("25s") Duration shutdownGrace,
         @Min(1) @Max(20) @DefaultValue("5") int reportAttempts,
         @NotNull @DefaultValue @Size(max = 32) List<@NotBlank String> httpAllowedPrivateAddresses,
         @DefaultValue("false") boolean chaosEnabled) {
+
+    public WorkerSettings {
+        if (claimWait.isNegative()
+                || claimWait.toMillis() > WorkerProtocol.MAX_CLAIM_WAIT_MILLIS
+                || claimWait.compareTo(requestTimeout) >= 0) {
+            throw new IllegalArgumentException("claim-wait must be between 0 and "
+                    + WorkerProtocol.MAX_CLAIM_WAIT_MILLIS + " ms, and below request-timeout");
+        }
+    }
 
     public record Capacity(
             @DefaultValue("2000") int cpuMillis,
