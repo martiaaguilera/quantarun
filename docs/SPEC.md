@@ -208,7 +208,7 @@ Reported metrics:
 These are resources, not a contract. The contract is the generated OpenAPI document.
 - `/api/v1/jobs`: submit, list/filter, get, cancel, revive; plus attempts, events, decisions and checkpoints for a job.
 - `/api/v1/workers`: list, get, drain (operator).
-- `/worker-api/v1/...`: register, heartbeat, claim, report, checkpoint. These use worker credentials, not project keys.
+- `/worker-api/v1/...`: register, heartbeat, claim, report, checkpoint. These use worker credentials, not project keys. A claim may wait (`waitMillis`, at most 5 s) for work to be placed on the worker instead of returning empty at once.
 - `/api/v1/projects`, `/api/v1/projects/{id}/api-keys`: admin only.
 - `/api/v1/scheduler`: active policy, recent decisions, unschedulable jobs.
 - `/api/v1/simulations`: run a scenario against several policies; fetch the results.

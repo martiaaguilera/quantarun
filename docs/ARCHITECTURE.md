@@ -127,8 +127,13 @@ plane acts on the authenticated worker id, never a client-supplied one.
    unclaimed assignments for at most `claim-timeout` (30 s), so a worker whose intake is stuck cannot hold work.
 3. `POST deregister`: on graceful shutdown. Leaves immediately with nothing reserved, otherwise drains first.
 4. `POST claim`: returns up to `maxAssignments` ASSIGNED attempts of this worker with their payloads and trace
-   context, and starts them (RUNNING). The worker polls it every 500 ms while it has free slots, and at once after a claim that returned work.
-   Long polling was not needed at this scale.
+   context, and starts them (RUNNING). A claim carries `waitMillis` (2 s by default, at most 5 s): when nothing is
+   assigned yet, the control plane holds it, without a transaction, until a placement on this worker commits
+   (`AssignmentSignal`) or the wait ends, rechecking the database every 500 ms for work another instance placed. A
+   worker with every slot busy waits for a slot to free instead of polling. Together with `PlacementSignal`, which
+   wakes an idle scheduler when a submission or freed capacity commits, this took a lightly loaded job's time to
+   start from 455 ms to 12 ms at p50 (BENCHMARKS.md). Both signals are in-process hints; the database stays the only
+   coordinator.
 5. `POST attempts/{id}/checkpoints` and `POST attempts/{id}/report`: fenced by attempt id + worker id. A claim
    hands over the job's last committed checkpoint, so a retry of a staged workload resumes after it.
 

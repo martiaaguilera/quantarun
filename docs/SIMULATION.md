@@ -22,7 +22,7 @@ What runs is **the production decision code**:
 - A crashed worker's attempts keep their reservations until their 15 s leases expire, then retry as WORKER_LOST.
 
 What it does **not** model: the database (lock waits, query latency), heartbeats and network delay. Those are measured
-separately in benchmarks (Phase 13). A simulated result is therefore a statement about the policies, not about
+separately in BENCHMARKS.md. A simulated result is therefore a statement about the policies, not about
 PostgreSQL.
 
 ## Scenarios
@@ -194,6 +194,7 @@ Per-tenant queue wait p95 (s):
 - Attempts run for their trace duration, but the planner charges fair-share service with the same fixed estimate as
   the live scheduler (`SCHEDULER.md`). The simulation therefore reproduces the live policy, including its blind spot
   for long jobs.
-- Runs are synchronous. The largest allowed request (`BURST`, 20,000 jobs) took 6.0 s for FIFO and 7.7 s for
-  FAIR_SHARE, so about 45 s for all six policies. That is bounded but long for one HTTP request. Phase 13 will profile
-  the planner (most of the time goes to building decision records for jobs that cannot be placed).
+- Runs are synchronous. The largest allowed request (`BURST`, 20,000 jobs, all six policies) takes 11.4–13.0 s,
+  down from 30.2–32.9 s. The simulator now plans with `PlacementPlanner.placementsOnly`, the same placement logic
+  without the explanations it used to build and discard for every waiting job. `SimulationGoldenTest` pins every
+  scenario's result hash under every policy, so this did not change a single result (BENCHMARKS.md).

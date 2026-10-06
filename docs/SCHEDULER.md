@@ -146,13 +146,14 @@ Phase 7, measured on 2026-10-02 (PostgreSQL 18.6 in Docker, 4 vCPU Xeon @ 2.1 GH
 The slow plan existed only until autovacuum set the visibility map (it ran between the two measurements); the
 index-only scan needs the pages marked all-visible.
 
-Finished jobs never enter the partial index, so history size does not slow scheduling. The priority window sorts the
-whole runnable backlog. That is fine at this size; an index on `(priority DESC, available_at, id)` for runnable rows
-is the fix if a measured backlog makes it matter (Phase 13).
+Finished jobs never enter the partial index, so history size does not slow scheduling. The priority window used to
+sort the whole runnable backlog: 10.2 ms per window with 10,000 runnable jobs. The partial index on
+`(priority DESC, available_at, id)` (V11) brings it to 0.15–0.24 ms, the same as the FIFO window (BENCHMARKS.md).
 
 ## Configuration
 
 `quantarun.scheduler.*`: `policy` (`FIFO`, `PRIORITY`, `LEAST_LOADED`, `BIN_PACKING`, `FAIR_SHARE` or `DEADLINE`;
 compose sets `QUANTARUN_SCHEDULER_POLICY`, default `BIN_PACKING` for the demo),
-`window-size` (200), `idle-delay` (500 ms between empty cycles; a productive cycle repeats at once), `loops`
+`window-size` (200), `idle-delay` (500 ms between empty cycles, cut short when a submission or freed capacity
+commits in this process; a productive cycle repeats at once), `loops`
 (concurrent loops in one process, default 1).
