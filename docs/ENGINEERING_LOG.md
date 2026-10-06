@@ -2,6 +2,35 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-04: A database outage looked like the death of every worker
+Phase 12 asks what happens when PostgreSQL restarts. We stopped it for 25 polls while 10 jobs of 8 s ran. Correctness
+held: every job succeeded once and every reservation matched. Liveness did not: all 10 running attempts were lost and
+run again, and all three workers were retired and registered again, although every one of them stayed alive.
+
+It took four live runs to find every cause; each is a row in FAILURE_SEMANTICS.md.
+
+- **The pool wait.** Each request waited Hikari's default 30 s for a connection. With virtual threads nothing caps
+  how many park, and the 25 readiness polls alone took 12 minutes. The pool now gives up after 3 s. An outermost
+  filter turns "no connection" into `503 DATABASE_UNAVAILABLE` with Retry-After. It has to be outermost because the
+  credential lookups run in filters, before any controller advice.
+- **Deafness charged to the workers.** Nobody could renew a lease or record a heartbeat while the database was down.
+  So the first reaper tick afterwards saw expired leases, and the liveness monitor saw silent workers. This is the
+  2026-10-01 restart incident again, in a process that never restarted. A gap between successful ticks longer than
+  two heartbeat intervals is now treated like a restart. Hearing is confirmed by a ping, so a tick spent failing
+  never counts.
+- **Workers gave up too early.** Reports were tried five times in a few seconds and then dropped, so the work of
+  every attempt that finished during the outage was thrown away. Unavailability (no connection, or a 503) now never
+  uses up the budget. The control plane ends the wait, by accepting the report or by calling the attempt lost.
+- **The first report beat the catch-up.** With the reaper extending leases on its tick, a report that arrived
+  between the database's return and that tick still met an expired lease and was refused (correctly, by that
+  morning's fence). `LeaseContinuity` now runs before any lease is judged, from the reaper and every worker protocol
+  endpoint. It runs in its own transaction, serialised, and locks in id order like renewal. Never having heard counts
+  as a gap, which also closes the same race right after a control-plane start: Tomcat serves requests before
+  `ApplicationReadyEvent`.
+
+After all four, the same outage lost nothing. The price: a worker that really died during the outage is noticed one
+lease later than it would have been.
+
 ## 2026-10-04: A report could finish an attempt its heartbeat had already called lost
 The race tests each prove one interleaving family. `ConcurrencyTortureTest` runs everything at once: four
 schedulers on random policies, six simulated workers that claim, heartbeat, checkpoint, succeed, fail, repeat

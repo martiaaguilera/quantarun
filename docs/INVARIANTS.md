@@ -29,6 +29,21 @@ Transaction semantics per operation are in `ARCHITECTURE.md` §4.
 | I19 | A heartbeating worker cannot hold an assignment it never claims for longer than the claim timeout plus one lease | Heartbeats renew an unclaimed (ASSIGNED) attempt only while it is younger than `claim-timeout`; after that its lease expires and the reaper recovers it | – (application logic) | **proven**: `WorkerExecutionApiTest.heartbeat_stopsRenewingAnAssignmentLeftUnclaimedPastTheClaimTimeout`; live: released after 42.6 s with a 30 s claim timeout (CHAOS.md) |
 | I20 | Telemetry describes committed state only: no span, counter or timer for a state change that rolled back, and a replayed idempotent submission is not counted again | Job metrics and placement spans are recorded in an after-commit synchronization (`AfterCommit`); on rollback, spans are abandoned and never exported | – (application logic) | **proven**: `ObservabilityTest.aRolledBackPlacement_leavesNoSpans` (fails with the rollback guard removed: the phantom `job.schedule` and `job.queued` appear); `ObservabilityTest.jobMetrics_countCommittedWorkOnly` |
 | I21 | The live event stream delivers every committed job event a subscriber may see, at most once per connection and in id order per job, including an event that commits after a higher id was already sent; a resumed connection neither repeats nor skips events, or it is told to refetch (`reset`) | `JobEventStream` tails `job_events` below a low watermark plus a set of ids already delivered above it; a gap is waited for (`gap-timeout`) before it counts as rolled back; resume replays `id > Last-Event-ID` up to 1,000 events | – (application logic) | **proven**: `JobEventStreamTest.anEventThatCommitsLate_isStillDelivered` (fails with naive `id > last` tailing), `lastEventId_replaysWhatWasMissed_withoutDuplicates`, `missingTooMuch_asksTheClientToReload`, `aRolledBackId_isSkippedAfterTheGapTimeout` |
+| I22 | Time in which the control plane could not hear heartbeats (a restart, a database outage, a stalled process) is never charged to the workers: no lease is judged expired, and no worker retired, on account of it | `LeaseContinuity` extends every active lease, in its own transaction and before any lease is judged, when the database was not reached for longer than two heartbeat intervals or never since start; the reaper and every worker protocol endpoint call it first. Liveness retirement pauses for a grace after such a gap, measured by a ping so that a tick spent failing never counts as hearing | – (application logic) | **proven**: `LeaseContinuityTest` (the first report and the first heartbeat after a gap are judged on extended leases; a fresh instance extends; without a gap an expired lease stays expired); `LeaseReaperTest.afterAGapInHearing_leasesAreExtendedBeforeAnythingIsReaped`; `WorkerRetirementGraceTest.afterAGapInHearing_retirementPausesForAGrace_thenResumes`, `anOutageDuringTheGrace_extendsIt`; live: a 25 s PostgreSQL stop under load lost 10 of 10 running attempts before the fix and none after (FAILURE_SEMANTICS.md) |
+
+## Repeated runs (Phase 12)
+
+One green run proves an interleaving happened to be safe once. `scripts/repeat-race-tests.sh` runs the eleven
+concurrency classes again and again (90 tests per run, including `ConcurrencyTortureTest` with a 20 s chaos phase).
+
+| Date | Commit | Runs | Result | Notes |
+|---|---|---|---|---|
+| 2026-10-04 | `2f98ef2` | 20 | 17 passed | All three failures were the completion race's coverage check (no report landed between expiry and recovery), not an invariant; idle reapers now pause between passes |
+| 2026-10-04 | `272dbd6` | 20 | 20 passed | |
+| 2026-10-04 | `19aac78` | 20 | 20 passed | Torture totals: 240,655 snapshot audits of I1–I3, 17,909 placements, 1,287 leases lost, 262 reports refused as LEASE_EXPIRED, 282 worker crashes, 2,482 revives, 3,008 duplicate reports, 30,039 submissions (half of them duplicates), with no violation |
+
+Hardware: a cloud container with 4 vCPUs (Intel Xeon, 2.8 GHz) and 15 GB RAM, Linux 6.18, PostgreSQL 18 in
+Testcontainers. Command: `scripts/repeat-race-tests.sh 20 20`.
 
 ## What these tests do and do not prove
 

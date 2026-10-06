@@ -88,6 +88,12 @@ The rules that every write path follows:
    transaction is open.
 4. **Consistent lock order.** A transaction that locks both jobs and workers locks jobs first, then workers
    in ascending id order, which prevents deadlocks between schedulers, reapers and completions.
+5. **Leases measure the workers' silence, not the control plane's.** Before any lease is judged (the reaper's tick,
+   and every heartbeat, claim, report and checkpoint), `LeaseContinuity` checks when the database was last reached.
+   If that is longer ago than two heartbeat intervals, or never since start, it first extends every active lease in
+   its own transaction. Liveness retirement pauses for a grace after the same kind of gap (I22). When the database is
+   unreachable, the pool gives up after 3 s and the API answers `503 DATABASE_UNAVAILABLE` with Retry-After, which
+   workers retry without spending their report budget.
 
 Transaction semantics per operation:
 

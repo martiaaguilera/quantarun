@@ -148,6 +148,27 @@ attempted. Redirects are not followed. An operator can allow specific internal I
 1 MiB), never stored. Live check: jobs targeting `169.254.169.254` and `localhost` both ended FAILED with INVALID_INPUT,
 "the target address is not allowed".
 
+## A database outage
+
+PostgreSQL is the coordinator, so while it is down nothing is placed, claimed, renewed, reported or recovered. Workers
+keep running what they hold. The control plane answers `503 DATABASE_UNAVAILABLE` with `Retry-After: 2` within 3 s
+(the pool's connection timeout), and readiness goes DOWN. When the database returns, the first caller to reach it, a
+worker request or the reaper's tick, extends every active lease before any is judged, and worker retirement pauses
+for one grace period (I22). Nothing that was alive is charged for the outage.
+
+Measured on 2026-10-04 on the host-process stack (control plane, three workers, PostgreSQL 18 in Docker, 4 vCPUs):
+30 delay jobs of 8 s, PostgreSQL stopped with `docker stop -t 0` while 10 ran, restarted 25 polls later. Command:
+`OUTAGE=25 scripts/pg-outage.sh`.
+
+| Build | Outage | Ready after restart | All jobs final after restart | Running attempts lost | Workers re-registered |
+|---|---|---|---|---|---|
+| Before (`272dbd6`) | 747 s (each readiness probe waited 30 s for a connection) | 4.0 s | 55.6 s | 10 of 10 | 3 of 3 |
+| 3 s pool timeout, gap detection in the reaper and liveness monitor | 77 s | 3.8 s | 45.9 s | 10 of 10 (workers gave up their reports) | 0 |
+| Plus reports that outlast an outage | 77 s | 3.8 s | 43.8 s | 2 (the first reports beat the reaper's catch-up) | 0 |
+| Plus `LeaseContinuity` on every worker request (`19aac78`) | 77 s | 3.8 s | 39.5 s | **0**; all 30 succeeded on their first attempt | 0 |
+
+In every run, each job succeeded exactly once and every reservation matched its active attempts.
+
 ## Races and who wins
 
 | Race | Outcome | Proof |
@@ -170,8 +191,10 @@ attempted. Redirects are not followed. An operator can allow specific internal I
 - An attempt ends exactly one way: the first of *completed*, *timed out*, *cancelled*, *lost* or *shut down* wins,
   and only the winner may interrupt the thread. A timeout that fires after the workload finished cannot abort the
   success report.
-- Reports are retried with full-jitter backoff on network and 5xx errors (5 tries by default). 404 and 409 are final.
-  If every try fails, the lease expires and the control plane recovers the attempt, so a lost report costs a retry,
-  never correctness.
+- Reports and checkpoints are retried with full-jitter backoff. 404 and 409 are final. An unreachable control plane
+  or a 503 never uses up the retry budget: the attempt stays in the heartbeats and the worker keeps trying until the
+  control plane answers, or a heartbeat calls the attempt lost. Other 5xx errors use up the budget (5 by default),
+  after which the lease expires and the control plane recovers the attempt, so a lost report costs a retry, never
+  correctness.
 - Graceful shutdown: stop claiming; deregister, which drains the worker if it is busy; keep heartbeating while
   attempts finish (25 s grace); stop what is left as TRANSIENT; deregister.
