@@ -6,6 +6,7 @@ import static org.springframework.test.web.client.ExpectedCount.times;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withServiceUnavailable;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
@@ -297,6 +298,31 @@ class AttemptExecutorTest {
         var attempt = assignment("delay", Map.of("durationMs", 0), 30);
         server.expect(times(2), requestTo(reportUrl(attempt))).andRespond(withServiceUnavailable());
         expectReport(attempt).andRespond(accepted(attempt, "SUCCEEDED"));
+
+        executor.start(attempt, SECRET);
+
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        server.verify();
+    }
+
+    /** The budget is 3; an outage that answers 503 six times must not make the worker abandon a finished attempt. */
+    @Test
+    void reportDuringAControlPlaneOutage_isRetriedBeyondTheBudget_untilItIsDelivered() throws Exception {
+        var attempt = assignment("delay", Map.of("durationMs", 0), 30);
+        server.expect(times(6), requestTo(reportUrl(attempt))).andRespond(withServiceUnavailable());
+        expectReport(attempt).andRespond(accepted(attempt, "SUCCEEDED"));
+
+        executor.start(attempt, SECRET);
+
+        assertThat(executor.awaitIdle(IDLE_TIMEOUT)).isTrue();
+        server.verify();
+    }
+
+    /** A 500 may be deterministic, so it uses up the budget: the worker stops and the lease decides. */
+    @Test
+    void reportMeetingInternalErrors_givesUpAfterItsBudget() throws Exception {
+        var attempt = assignment("delay", Map.of("durationMs", 0), 30);
+        server.expect(times(3), requestTo(reportUrl(attempt))).andRespond(withServerError());
 
         executor.start(attempt, SECRET);
 

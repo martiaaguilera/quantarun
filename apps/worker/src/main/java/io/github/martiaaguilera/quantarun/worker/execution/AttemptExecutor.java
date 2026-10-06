@@ -29,7 +29,10 @@ import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 
 /**
@@ -352,6 +355,7 @@ public class AttemptExecutor implements AutoCloseable {
             throws InterruptedException {
         var attemptId = attempt.assignment.attemptId();
         var backoff = new Backoff(reportPolicy.baseDelay(), reportPolicy.maxDelay());
+        var faults = 0;
         for (int tryNo = 1; ; tryNo++) {
             try {
                 controlPlane.checkpoint(
@@ -365,7 +369,7 @@ public class AttemptExecutor implements AutoCloseable {
                         "checkpoint for stage " + stageIndex + " refused with HTTP "
                                 + e.getStatusCode().value());
             } catch (RestClientException e) {
-                if (tryNo >= reportPolicy.attempts()) {
+                if (!controlPlaneUnavailable(e) && ++faults >= reportPolicy.attempts()) {
                     throw new WorkloadFailure(
                             FailureClass.TRANSIENT, "could not commit the checkpoint for stage " + stageIndex);
                 }
@@ -375,13 +379,18 @@ public class AttemptExecutor implements AutoCloseable {
     }
 
     /**
-     * Sends the report with bounded retries on network and server errors. A rejection (404/409) is final: the attempt
-     * was recovered or this registration retired, and the control plane already decided what happens to the job.
+     * Sends the report until the control plane answers. A rejection (404/409) is final: the attempt was recovered or
+     * this registration retired, and the control plane already decided what happens to the job. An unreachable control
+     * plane or a 503 says nothing about the report, so it never uses up the retry budget: the attempt stays in the
+     * heartbeats meanwhile, and only the control plane can end the wait, by accepting the report or by calling the
+     * attempt lost. Giving up there turned a 25 s database outage into a retry of every finished attempt
+     * (ENGINEERING_LOG, 2026-10-04). Other server errors may be deterministic, so they use up the budget.
      */
     private void send(Running attempt, WorkerProtocol.ReportRequest report) {
         var attemptId = attempt.assignment.attemptId();
         var backoff = new Backoff(reportPolicy.baseDelay(), reportPolicy.maxDelay());
-        for (int tryNo = 1; tryNo <= reportPolicy.attempts(); tryNo++) {
+        var faults = 0;
+        for (int tryNo = 1; ; tryNo++) {
             if (attempt.stop.get() == Stop.LOST) {
                 return;
             }
@@ -407,7 +416,7 @@ public class AttemptExecutor implements AutoCloseable {
                         .log("Report refused as invalid; not retrying");
                 return;
             } catch (RestClientException e) {
-                if (tryNo == reportPolicy.attempts()) {
+                if (!controlPlaneUnavailable(e) && ++faults >= reportPolicy.attempts()) {
                     log.atWarn()
                             .addKeyValue("attemptId", attemptId)
                             .addKeyValue("error", e.getMessage())
@@ -422,6 +431,13 @@ public class AttemptExecutor implements AutoCloseable {
                 }
             }
         }
+    }
+
+    /** The control plane could not be reached, or said it cannot serve right now (503): nothing about the request. */
+    private static boolean controlPlaneUnavailable(RestClientException e) {
+        return e instanceof ResourceAccessException
+                || (e instanceof HttpServerErrorException server
+                        && server.getStatusCode().value() == HttpStatus.SERVICE_UNAVAILABLE.value());
     }
 
     private void stop(Running attempt, Stop reason) {

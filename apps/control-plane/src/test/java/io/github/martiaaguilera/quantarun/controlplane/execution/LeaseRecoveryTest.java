@@ -11,6 +11,7 @@ import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerRegistry;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.AttemptOutcome;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -21,7 +22,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -243,10 +246,11 @@ class LeaseRecoveryTest {
     }
 
     /**
-     * Invariants I6 and I10: a worker reporting success while its lease is being reaped. Over many rounds, with
-     * several reapers sharing the work, every attempt has exactly one outcome: either the report won (SUCCEEDED, and
-     * the reaper skipped it) or the reaper won (LOST, and the report was rejected). The reservation is released exactly
-     * once either way; a second release would trip the CHECK constraint and fail the test with an exception.
+     * Invariants I6 and I10: a worker reporting success while its lease expires and is reaped. Leases expire one by one
+     * while the reports and several reapers run, so a report can land before the expiry (it wins: SUCCEEDED, and the
+     * reaper skips it), after the expiry but before the reaper (refused as LEASE_EXPIRED; the reaper then recovers it),
+     * or after the reaper (rejected). Every attempt has exactly one outcome, and the reservation is released exactly
+     * once; a second release would trip the CHECK constraint and fail the test with an exception.
      */
     @Test
     void completionRacingLeaseExpiry_hasExactlyOneWinnerPerAttempt() throws Exception {
@@ -254,6 +258,7 @@ class LeaseRecoveryTest {
         var jobsPerRound = 40;
         var totalReportWins = 0;
         var totalReaperWins = 0;
+        var totalRefusedAfterExpiry = 0;
         for (int round = 0; round < rounds; round++) {
             fixture.reset();
             var workers = List.of(
@@ -271,12 +276,23 @@ class LeaseRecoveryTest {
                 attempts.claim(worker.id(), 10).forEach(claimed -> owners.put(claimed.attemptId(), worker.id()));
             }
             assertThat(owners).hasSize(jobsPerRound);
-            owners.keySet().forEach(fixture::expireLease);
 
             var reported = new ConcurrentHashMap<UUID, ReportResult>();
             var reaped = new AtomicInteger();
+            var expiring = new AtomicBoolean(true);
             var tasks = new ArrayList<Callable<Void>>();
+            var order = new ArrayList<>(owners.keySet());
+            Collections.shuffle(order);
+            tasks.add(() -> {
+                for (var attempt : order) {
+                    fixture.expireLease(attempt);
+                    Thread.sleep(1);
+                }
+                expiring.set(false);
+                return null;
+            });
             owners.forEach((attempt, worker) -> tasks.add(() -> {
+                Thread.sleep(ThreadLocalRandom.current().nextInt(60));
                 reported.put(
                         attempt, attempts.report(worker, attempt, AttemptOutcome.SUCCEEDED, null, null, null, null));
                 return null;
@@ -287,7 +303,12 @@ class LeaseRecoveryTest {
                     do {
                         count = attempts.recoverExpiredLeases(7);
                         reaped.addAndGet(count);
-                    } while (count > 0);
+                        if (count == 0) {
+                            // The real reaper runs on a tick; spinning would close the window between expiry and
+                            // recovery that a report must also be able to land in.
+                            Thread.sleep(2);
+                        }
+                    } while (count > 0 || expiring.get());
                     return null;
                 });
             }
@@ -303,7 +324,10 @@ class LeaseRecoveryTest {
                     reportWins++;
                 } else {
                     assertThat(status).isEqualTo("LOST");
-                    assertThat(result).isInstanceOf(ReportResult.Rejected.class);
+                    assertThat(result).isInstanceOfAny(ReportResult.Rejected.class, ReportResult.LeaseExpired.class);
+                    if (result instanceof ReportResult.LeaseExpired) {
+                        totalRefusedAfterExpiry++;
+                    }
                 }
             }
             assertThat(reaped.get()).isEqualTo(jobsPerRound - reportWins);
@@ -322,9 +346,12 @@ class LeaseRecoveryTest {
             totalReportWins += reportWins;
             totalReaperWins += jobsPerRound - reportWins;
         }
-        // Not an invariant, but a sanity check that the test really raced: both sides must have won sometimes.
+        // Not an invariant, but a sanity check that the test really raced: every ending must have happened sometimes.
         assertThat(totalReportWins).as("report wins").isPositive();
         assertThat(totalReaperWins).as("reaper wins").isPositive();
+        assertThat(totalRefusedAfterExpiry)
+                .as("reports refused between expiry and recovery")
+                .isPositive();
     }
 
     /**

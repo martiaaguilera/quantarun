@@ -1,12 +1,14 @@
 package io.github.martiaaguilera.quantarun.controlplane.reliability;
 
 import io.github.martiaaguilera.quantarun.controlplane.jobs.JobAttempts;
+import io.github.martiaaguilera.quantarun.controlplane.jobs.LeaseContinuity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.dao.DataAccessException;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 /**
  * Recovers attempts whose leases expired: the worker is presumed lost, its reservation is released and the job is
@@ -16,6 +18,10 @@ import org.springframework.scheduling.annotation.Scheduled;
  * could renew a lease, so on startup every running attempt may look expired; reaping then would declare the whole
  * fleet's work lost and run it again. This is the lease counterpart of the worker startup grace (ENGINEERING_LOG,
  * 2026-10-01). {@code @Scheduled} tasks start at context refresh, before {@link ApplicationReadyEvent}, hence the flag.
+ *
+ * <p>The same holds after any stretch in which this control plane could not hear heartbeats while it kept running: a
+ * database outage, a long pause of the process. {@link LeaseContinuity} extends the leases again before anything is
+ * reaped, and before any worker request judges a lease (ENGINEERING_LOG, 2026-10-04).
  */
 class LeaseReaper {
 
@@ -26,17 +32,19 @@ class LeaseReaper {
     static final int MAX_BATCHES_PER_TICK = 20;
 
     private final JobAttempts attempts;
+    private final LeaseContinuity continuity;
     private volatile boolean leasesExtended;
 
-    LeaseReaper(JobAttempts attempts) {
+    LeaseReaper(JobAttempts attempts, LeaseContinuity continuity) {
         this.attempts = attempts;
+        this.continuity = continuity;
     }
 
     @EventListener(ApplicationReadyEvent.class)
     void extendLeasesAfterStartup() {
-        var extended = attempts.extendActiveLeasesAfterRestart();
+        continuity.catchUp();
         leasesExtended = true;
-        log.atInfo().addKeyValue("extendedLeases", extended).log("Lease reaper armed");
+        log.atInfo().log("Lease reaper armed");
     }
 
     /**
@@ -49,6 +57,7 @@ class LeaseReaper {
             return;
         }
         try {
+            continuity.catchUp();
             var recovered = 0;
             for (int batch = 0; batch < MAX_BATCHES_PER_TICK; batch++) {
                 var count = attempts.recoverExpiredLeases(BATCH_SIZE);
@@ -60,7 +69,7 @@ class LeaseReaper {
             if (recovered > 0) {
                 log.atInfo().addKeyValue("recovered", recovered).log("Recovered attempts with expired leases");
             }
-        } catch (DataAccessException e) {
+        } catch (DataAccessException | CannotCreateTransactionException e) {
             log.atWarn().addKeyValue("error", e.getMessage()).log("Lease reaping failed; retrying next tick");
         }
     }

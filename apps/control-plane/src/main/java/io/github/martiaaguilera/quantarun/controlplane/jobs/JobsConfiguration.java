@@ -1,5 +1,7 @@
 package io.github.martiaaguilera.quantarun.controlplane.jobs;
 
+import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerProperties;
+import java.time.Clock;
 import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -16,6 +18,15 @@ class JobsConfiguration {
             @Value("${quantarun.retries.base-delay:1s}") Duration baseDelay,
             @Value("${quantarun.retries.max-delay:60s}") Duration maxDelay) {
         return new RetryPolicy(baseDelay, maxDelay);
+    }
+
+    @Bean
+    LeaseContinuity leaseContinuity(
+            JobAttempts attempts,
+            Clock clock,
+            WorkerProperties workers,
+            @Value("${quantarun.reliability.lease-continuity-enabled:true}") boolean enabled) {
+        return new LeaseContinuity(attempts, clock, workers.deafAfter(), enabled);
     }
 
     /** Off in tests, which refresh the gauges themselves when they assert on them. */

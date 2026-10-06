@@ -2,6 +2,61 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-04: A database outage looked like the death of every worker
+Phase 12 asks what happens when PostgreSQL restarts. We stopped it for 25 polls while 10 jobs of 8 s ran. Correctness
+held: every job succeeded once and every reservation matched. Liveness did not: all 10 running attempts were lost and
+run again, and all three workers were retired and registered again, although every one of them stayed alive.
+
+It took four live runs to find every cause; each is a row in FAILURE_SEMANTICS.md.
+
+- **The pool wait.** Each request waited Hikari's default 30 s for a connection. With virtual threads nothing caps
+  how many park, and the 25 readiness polls alone took 12 minutes. The pool now gives up after 3 s. An outermost
+  filter turns "no connection" into `503 DATABASE_UNAVAILABLE` with Retry-After. It has to be outermost because the
+  credential lookups run in filters, before any controller advice.
+- **Deafness charged to the workers.** Nobody could renew a lease or record a heartbeat while the database was down.
+  So the first reaper tick afterwards saw expired leases, and the liveness monitor saw silent workers. This is the
+  2026-10-01 restart incident again, in a process that never restarted. A gap between successful ticks longer than
+  two heartbeat intervals is now treated like a restart. Hearing is confirmed by a ping, so a tick spent failing
+  never counts.
+- **Workers gave up too early.** Reports were tried five times in a few seconds and then dropped, so the work of
+  every attempt that finished during the outage was thrown away. Unavailability (no connection, or a 503) now never
+  uses up the budget. The control plane ends the wait, by accepting the report or by calling the attempt lost.
+- **The first report beat the catch-up.** With the reaper extending leases on its tick, a report that arrived
+  between the database's return and that tick still met an expired lease and was refused (correctly, by that
+  morning's fence). `LeaseContinuity` now runs before any lease is judged, from the reaper and every worker protocol
+  endpoint. It runs in its own transaction, serialised, and locks in id order like renewal. Never having heard counts
+  as a gap, which also closes the same race right after a control-plane start: Tomcat serves requests before
+  `ApplicationReadyEvent`.
+
+After all four, the same outage lost nothing. The price: a worker that really died during the outage is noticed one
+lease later than it would have been.
+
+## 2026-10-04: A report could finish an attempt its heartbeat had already called lost
+The race tests each prove one interleaving family. `ConcurrencyTortureTest` runs everything at once: four
+schedulers on random policies, six simulated workers that claim, heartbeat, checkpoint, succeed, fail, repeat
+reports and crash, a reaper, a clock that expires leases, cancellation, revive and duplicate submissions, with an
+auditor checking I1–I3 in every snapshot. In its first run, one worker reported success for an attempt that its own
+heartbeat had just returned as lost, and the report was applied.
+
+The heartbeat refused to renew the lease because it had expired. The reaper had not run yet, so the attempt was still
+RUNNING, and the report checked only status and ownership. I6 held, because one success is one success. But the control
+plane answered "lost" and "yours" about the same attempt within milliseconds. The real worker stops silently on
+"lost", so nothing broke in practice. A worker that was slow rather than dead could still complete work the heartbeat
+had already given up.
+
+The fix makes expiry a single decision point. Claim and renewal already required `lease_expires_at > now()`; report
+and checkpoint now ask the same question after taking the attempt's row lock, and answer `409 LEASE_EXPIRED`. After
+expiry, only the reaper can act on the attempt. The cost is that a worker finishing just after its lease ran out
+loses that work to a retry. With a 15 s lease and 3 s heartbeats, that worker has missed five heartbeats and is
+presumed dead anyway. `completionRacingLeaseExpiry_hasExactlyOneWinnerPerAttempt` used to expire every lease before
+the race, which would now make the report always lose. It now expires leases one by one while the reports and
+reapers run, and requires all three endings (report wins, refused after expiry, rejected after recovery) to occur.
+
+Two first-run failures were the test's own. Simulated workers renewed leases without the liveness heartbeat, so the
+scheduler rightly stopped trusting them. Unbounded submissions also queued about 4,000 jobs, which 18 slots could not
+drain in 90 s. Submissions are now capped at 1,500. The same run showed roughly 12 placements a second with four
+schedulers contending for worker locks over a 4,000-job queue. That is a lead for Phase 13, not a measured benchmark.
+
 ## 2026-10-04: Tailing job_events by id loses late commits
 The first SSE design remembered the highest id sent and asked for `id > last`. Ids come from an identity sequence and
 are taken at insert, so a transaction that inserted id 41 and committed after the one holding id 42 was never sent.

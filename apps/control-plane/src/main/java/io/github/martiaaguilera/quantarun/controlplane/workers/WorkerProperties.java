@@ -61,6 +61,15 @@ public record WorkerProperties(
         }
     }
 
+    /**
+     * A gap this long between the control plane's own successful liveness or reaper ticks means heartbeats may have
+     * gone unheard (the database was unreachable, or the process stalled). Two heartbeat intervals: one missed beat is
+     * noise, two is a stretch in which a live worker could already look late.
+     */
+    public Duration deafAfter() {
+        return heartbeatInterval.multipliedBy(2);
+    }
+
     @Override
     public String toString() {
         return "WorkerProperties[bootstrapToken=<redacted>, heartbeatInterval=" + heartbeatInterval + ", lateAfter="

@@ -73,6 +73,13 @@ public class JobAttempts {
 
         /** The attempt is assigned but was never claimed, so there is no execution to report on. */
         record NotClaimed(UUID attemptId) implements ReportResult {}
+
+        /**
+         * The lease expired before the report arrived. Expiry is final: a lease is never renewed after it (I10), the
+         * worker has been told the attempt is lost, and the reaper recovers it. Accepting the report as well would
+         * give two answers to who owns the attempt.
+         */
+        record LeaseExpired(UUID attemptId) implements ReportResult {}
     }
 
     /** Result of committing a checkpoint (invariant I14). */
@@ -84,6 +91,9 @@ public class JobAttempts {
 
         /** Stages commit in order, without gaps, and are never rewritten. */
         record OutOfOrder(int expectedStage) implements CheckpointResult {}
+
+        /** The lease expired: the attempt is being recovered and can no longer commit stages. */
+        record LeaseExpired(UUID attemptId) implements CheckpointResult {}
 
         /** Only a RUNNING attempt can commit; a stale or recovered one is fenced out. */
         record NotActive(AttemptStatus attemptStatus) implements CheckpointResult {}
@@ -208,6 +218,9 @@ public class JobAttempts {
                     ? new ReportResult.AlreadyRecorded(attemptId, attempt.status(), jobStatus)
                     : new ReportResult.Rejected(attemptId, attempt.status());
         }
+        if (!attempts.leaseHeld(attemptId)) {
+            return new ReportResult.LeaseExpired(attemptId);
+        }
         var serializedResult = result == null || result.isEmpty() ? null : json.writeValueAsString(result);
         var effectiveFailure =
                 outcome == AttemptOutcome.FAILED && failureClass == null ? FailureClass.INTERNAL : failureClass;
@@ -239,6 +252,9 @@ public class JobAttempts {
         }
         if (attempt.status() != AttemptStatus.RUNNING) {
             return new CheckpointResult.NotActive(attempt.status());
+        }
+        if (!attempts.leaseHeld(attemptId)) {
+            return new CheckpointResult.LeaseExpired(attemptId);
         }
         var expected = checkpoints
                 .findLast(attempt.jobId())
@@ -281,6 +297,11 @@ public class JobAttempts {
     @Transactional
     public int extendActiveLeasesAfterRestart() {
         return attempts.extendActiveLeases(workerProperties.leaseDuration());
+    }
+
+    /** One round trip; throws while the database is unreachable. Used by {@link LeaseContinuity}. */
+    void confirmDatabaseReachable() {
+        attempts.ping();
     }
 
     private JobStatus endAttempt(

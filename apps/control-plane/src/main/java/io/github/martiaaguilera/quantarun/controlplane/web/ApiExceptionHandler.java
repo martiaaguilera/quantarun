@@ -5,11 +5,13 @@ import java.util.Locale;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.validation.method.ParameterErrors;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -59,6 +61,21 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 })
                 .toList();
         return validationProblem(ex, violations, headers, request);
+    }
+
+    /**
+     * The database is unreachable (no connection within the pool's timeout). That is the server's state, not a bug in
+     * the request, so it is a 503 that clients and workers retry with backoff, logged without a stack trace per request.
+     */
+    @ExceptionHandler({DataAccessResourceFailureException.class, CannotCreateTransactionException.class})
+    ResponseEntity<ProblemDetail> handleDatabaseUnavailable(RuntimeException ex) {
+        log.atWarn().addKeyValue("error", ex.getMessage()).log("Database unavailable; answered 503");
+        var problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE, "The database is unavailable. Retry shortly.");
+        problem.setProperty("code", "DATABASE_UNAVAILABLE");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, "2")
+                .body(problem);
     }
 
     /** Unexpected failures: log everything server-side, reveal nothing internal to the client. */

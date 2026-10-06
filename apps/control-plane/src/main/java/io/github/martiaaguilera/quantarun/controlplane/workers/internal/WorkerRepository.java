@@ -191,6 +191,11 @@ public class WorkerRepository {
 
     public record RetiredWorker(UUID id, String name) {}
 
+    /** A round trip to the database, for callers that must know it is reachable before trusting what it holds. */
+    public void ping() {
+        jdbc.sql("SELECT 1").query(Integer.class).single();
+    }
+
     /**
      * Retires registrations whose heartbeats stopped. Several control-plane instances may run this at once: the
      * lifecycle predicate is re-checked after any row lock wait, so each worker is retired exactly once.

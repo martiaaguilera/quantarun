@@ -5,10 +5,12 @@ import io.github.martiaaguilera.quantarun.controlplane.web.SecretTokens;
 import io.github.martiaaguilera.quantarun.controlplane.workers.internal.WorkerRepository;
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -25,7 +27,9 @@ public class WorkerRegistry {
     private final WorkerRepository workers;
     private final WorkerProperties properties;
     private final Clock clock;
-    private final Instant retirementAllowedFrom;
+    private volatile Instant retirementAllowedFrom;
+    /** When a liveness check last reached the database; a long gap means heartbeats may have gone unheard. */
+    private volatile @Nullable Instant lastHeard;
 
     WorkerRegistry(WorkerRepository workers, WorkerProperties properties, Clock clock) {
         this.workers = workers;
@@ -145,9 +149,25 @@ public class WorkerRegistry {
         return workers.findByNameRegisteredSince(name, since, limit);
     }
 
-    /** Called periodically by the liveness monitor. Does nothing during the startup grace period. */
+    /**
+     * Called periodically by the liveness monitor. Does nothing during the startup grace period, nor for a grace period
+     * after any gap in which this control plane could not hear heartbeats (a database outage, a stalled process):
+     * every live worker would look silent then, exactly as after a restart (ENGINEERING_LOG, 2026-10-04).
+     */
     public List<WorkerRepository.RetiredWorker> retireSilentWorkers() {
-        if (clock.instant().isBefore(retirementAllowedFrom)) {
+        // Throws while the database is unreachable, so such a tick never counts as having heard anything.
+        workers.ping();
+        var now = clock.instant();
+        var previous = lastHeard;
+        lastHeard = now;
+        if (previous != null && Duration.between(previous, now).compareTo(properties.deafAfter()) > 0) {
+            retirementAllowedFrom = now.plus(properties.startupGrace());
+            log.atWarn()
+                    .addKeyValue("deafFor", Duration.between(previous, now))
+                    .addKeyValue("grace", properties.startupGrace())
+                    .log("Could not hear workers for a while; retirement paused for a grace period");
+        }
+        if (now.isBefore(retirementAllowedFrom)) {
             return List.of();
         }
         var retired = workers.retireSilentWorkers(properties.offlineAfter());

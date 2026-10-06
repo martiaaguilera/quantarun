@@ -22,7 +22,9 @@ import org.springframework.validation.annotation.Validated;
  * @param claimInterval how often an idle worker asks for work; with free slots and work waiting it asks again at once.
  * @param shutdownGrace how long a graceful shutdown waits for running attempts before stopping them. Must stay below
  *     {@code spring.lifecycle.timeout-per-shutdown-phase}, or the platform kills the process mid-wait.
- * @param reportAttempts how many times an outcome report is sent before the worker gives up and lets the lease expire.
+ * @param reportAttempts how many unexpected server errors an outcome report or checkpoint may meet before the worker
+ *     gives up and lets the lease expire. An unreachable control plane or a 503 does not count: the worker keeps the
+ *     attempt in its heartbeats and retries until the control plane answers.
  * @param httpAllowedPrivateAddresses IPs or CIDRs the http workload may call although they are private or loopback
  *     (SSRF exceptions, for a local mock provider). Empty by default: only public addresses are reachable.
  * @param chaosEnabled whether this worker applies the chaos faults the control plane sends it. Off by default: a
