@@ -124,6 +124,12 @@ public class JobEventStream implements SmartLifecycle {
     private final Duration gapTimeout;
     private final Duration heartbeatInterval;
     private final int maxSubscribers;
+    /**
+     * Streams one project key may hold open. Without it one tenant could take every slot and lock the operator's
+     * console out of live updates (Phase 14 review). The operator is bounded only by the total.
+     */
+    private final int maxPerProject;
+
     private final Supplier<Instant> clock;
     private final List<Subscriber> subscribers = new CopyOnWriteArrayList<>();
 
@@ -141,8 +147,17 @@ public class JobEventStream implements SmartLifecycle {
             @Value("${quantarun.events.poll-interval:250ms}") Duration pollInterval,
             @Value("${quantarun.events.gap-timeout:5s}") Duration gapTimeout,
             @Value("${quantarun.events.heartbeat-interval:15s}") Duration heartbeatInterval,
-            @Value("${quantarun.events.max-subscribers:50}") int maxSubscribers) {
-        this(events, pollingEnabled, pollInterval, gapTimeout, heartbeatInterval, maxSubscribers, Instant::now);
+            @Value("${quantarun.events.max-subscribers:50}") int maxSubscribers,
+            @Value("${quantarun.events.max-subscribers-per-project:5}") int maxPerProject) {
+        this(
+                events,
+                pollingEnabled,
+                pollInterval,
+                gapTimeout,
+                heartbeatInterval,
+                maxSubscribers,
+                maxPerProject,
+                Instant::now);
     }
 
     JobEventStream(
@@ -152,6 +167,7 @@ public class JobEventStream implements SmartLifecycle {
             Duration gapTimeout,
             Duration heartbeatInterval,
             int maxSubscribers,
+            int maxPerProject,
             Supplier<Instant> clock) {
         this.events = events;
         this.pollingEnabled = pollingEnabled;
@@ -159,6 +175,7 @@ public class JobEventStream implements SmartLifecycle {
         this.gapTimeout = gapTimeout;
         this.heartbeatInterval = heartbeatInterval;
         this.maxSubscribers = maxSubscribers;
+        this.maxPerProject = maxPerProject;
         this.clock = clock;
     }
 
@@ -168,23 +185,39 @@ public class JobEventStream implements SmartLifecycle {
      * @return ends the subscription; safe to call more than once
      */
     public Runnable subscribe(Caller caller, @Nullable Long lastEventId, Sink sink) {
-        if (subscribers.size() >= maxSubscribers) {
-            throw new ApiException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "EVENT_STREAM_FULL",
-                    "Too many open event streams (" + maxSubscribers + "); retry shortly.");
-        }
         var subscriber = new Subscriber(caller, sink);
         // Registered before the replay is read, so nothing committed in between is lost; the replayed ids keep
         // anything that arrives both ways from being sent twice.
         synchronized (subscriber) {
-            subscribers.add(subscriber);
+            admit(subscriber);
             if (lastEventId != null) {
                 replay(subscriber, lastEventId);
             }
         }
         subscriber.drainer = Thread.ofVirtual().name("event-stream-subscriber").start(subscriber::drain);
         return subscriber::close;
+    }
+
+    /** Checks the limits and registers in one step, so concurrent connections cannot overshoot them. */
+    private synchronized void admit(Subscriber subscriber) {
+        if (subscribers.size() >= maxSubscribers) {
+            throw new ApiException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "EVENT_STREAM_FULL",
+                    "Too many open event streams (" + maxSubscribers + "); retry shortly.");
+        }
+        if (subscriber.caller instanceof Caller.ProjectMember member
+                && subscribers.stream()
+                                .filter(other -> other.caller instanceof Caller.ProjectMember theirs
+                                        && theirs.projectId().equals(member.projectId()))
+                                .count()
+                        >= maxPerProject) {
+            throw new ApiException(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "EVENT_STREAMS_PER_PROJECT",
+                    "This project already has " + maxPerProject + " open event streams; close one first.");
+        }
+        subscribers.add(subscriber);
     }
 
     private void replay(Subscriber subscriber, long lastEventId) {

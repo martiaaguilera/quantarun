@@ -2,6 +2,7 @@ package io.github.martiaaguilera.quantarun.controlplane.jobs;
 
 import io.github.martiaaguilera.quantarun.controlplane.security.Caller;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
@@ -78,6 +79,14 @@ class EventStreamController {
         emitter.onCompletion(unsubscribe);
         emitter.onTimeout(unsubscribe);
         emitter.onError(error -> unsubscribe.run());
+        // The response headers go out with the first write. Without one, a client on an idle system waited for the
+        // first heartbeat (15 s) to learn its stream was open, and the console showed "Connecting" all that time.
+        try {
+            emitter.send(SseEmitter.event().comment("connected"));
+        } catch (IOException e) {
+            unsubscribe.run();
+            throw new UncheckedIOException(e);
+        }
         return emitter;
     }
 }
