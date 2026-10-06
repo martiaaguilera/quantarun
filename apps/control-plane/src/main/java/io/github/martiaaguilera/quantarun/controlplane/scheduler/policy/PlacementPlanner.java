@@ -58,7 +58,18 @@ public final class PlacementPlanner {
     }
 
     public static Plan plan(SchedulingSnapshot snapshot, SchedulingPolicy policy) {
-        return new Planning(snapshot, policy).run();
+        return new Planning(snapshot, policy, true).run();
+    }
+
+    /**
+     * The same placements as {@link #plan}, without explaining them: the plan lists only PLACED decisions, with no
+     * reasons or candidate verdicts, and stops looking once no accepting worker has a free slot, since every placement
+     * needs one. The simulator only acts on placements, and building explanations for jobs that stay waiting was most
+     * of its time (BENCHMARKS.md). The placement logic is shared, so the two cannot drift apart;
+     * {@code SimulationGoldenTest} and {@code PlacementPropertiesTest} check that they do not.
+     */
+    public static Plan placementsOnly(SchedulingSnapshot snapshot, SchedulingPolicy policy) {
+        return new Planning(snapshot, policy, false).run();
     }
 
     /** The mutable state of one planning pass, discarded when it ends. */
@@ -70,11 +81,20 @@ public final class PlacementPlanner {
         private final Map<UUID, Usage> usage = new HashMap<>();
         private final Map<UUID, Double> virtualTimes = new LinkedHashMap<>();
         private final Resources fleet;
+        private final boolean explain;
+        /** Free slots on workers accepting work; at zero nothing more can be placed in this pass. */
+        private int openSlots;
 
-        Planning(SchedulingSnapshot snapshot, SchedulingPolicy policy) {
+        Planning(SchedulingSnapshot snapshot, SchedulingPolicy policy, boolean explain) {
             this.snapshot = snapshot;
             this.policy = policy;
+            this.explain = explain;
             snapshot.workers().forEach(worker -> free.put(worker.id(), worker.free()));
+            for (var worker : snapshot.workers()) {
+                if (worker.acceptingWork()) {
+                    openSlots += Math.max(0, worker.free().slots());
+                }
+            }
             this.fleet = fleetCapacity(snapshot.workers());
             for (var job : snapshot.jobs()) {
                 var project = snapshot.projectOf(job);
@@ -100,7 +120,10 @@ public final class PlacementPlanner {
                     .toList();
             var decisions = new ArrayList<PlacementDecision>(ordered.size());
             for (var job : ordered) {
-                decisions.add(decideAndApply(job));
+                if (!explain && openSlots == 0) {
+                    break;
+                }
+                addIfAny(decisions, decideAndApply(job));
             }
             return decisions;
         }
@@ -117,10 +140,10 @@ public final class PlacementPlanner {
             next.addAll(queues.keySet());
 
             var decisions = new ArrayList<PlacementDecision>(snapshot.jobs().size());
-            while (!next.isEmpty()) {
+            while (!next.isEmpty() && (explain || openSlots > 0)) {
                 var projectId = next.poll();
                 var queue = queues.get(projectId);
-                decisions.add(decideAndApply(queue.poll()));
+                addIfAny(decisions, decideAndApply(queue.poll()));
                 if (!queue.isEmpty()) {
                     // Re-inserted after the charge, so the queue sees the project's new virtual time.
                     next.add(projectId);
@@ -129,15 +152,41 @@ public final class PlacementPlanner {
             return decisions;
         }
 
-        private PlacementDecision decideAndApply(PendingJob job) {
+        private static void addIfAny(List<PlacementDecision> decisions, @Nullable PlacementDecision decision) {
+            if (decision != null) {
+                decisions.add(decision);
+            }
+        }
+
+        /** @return the decision, or null in lean mode when the job is not placed */
+        private @Nullable PlacementDecision decideAndApply(PendingJob job) {
             var project = snapshot.projectOf(job);
-            var decision = decide(job, project);
-            if (decision.chosenWorkerId() != null) {
+            var decision = explain ? decide(job, project) : placeOrSkip(job, project);
+            if (decision != null && decision.chosenWorkerId() != null) {
                 free.computeIfPresent(decision.chosenWorkerId(), (id, resources) -> resources.minus(job.demand()));
                 usage.get(project.id()).add(job.demand());
                 virtualTimes.merge(project.id(), charge(job, project), Double::sum);
+                openSlots--;
             }
             return decision;
+        }
+
+        /**
+         * {@link #decide} without the explanation: the same worker evaluation in the same order and the same tie-break,
+         * and the same quota check, so it places exactly what {@code decide} would.
+         */
+        private @Nullable PlacementDecision placeOrSkip(PendingJob job, ProjectState project) {
+            CandidateEvaluation best = null;
+            for (var worker : snapshot.workers()) {
+                var evaluation = evaluate(job, worker, free.get(worker.id()));
+                if (evaluation.verdict() == Verdict.FITS && (best == null || isBetter(evaluation, best))) {
+                    best = evaluation;
+                }
+            }
+            if (best == null || quotaBlock(job, project) != null) {
+                return null;
+            }
+            return new PlacementDecision(job, Outcome.PLACED, best.workerId(), "", List.of());
         }
 
         private PlacementDecision decide(PendingJob job, ProjectState project) {
@@ -219,6 +268,9 @@ public final class PlacementPlanner {
         }
 
         private CandidateEvaluation evaluate(PendingJob job, WorkerCandidate worker, Resources freeNow) {
+            if (!explain) {
+                return evaluateQuietly(job, worker, freeNow);
+            }
             if (!worker.labels().containsAll(job.requiredLabels())) {
                 var missing = new TreeSet<>(job.requiredLabels());
                 missing.removeAll(worker.labels());
@@ -254,6 +306,28 @@ public final class PlacementPlanner {
                     SchedulingPolicy.WorkerSelection.utilisationAfter(worker.capacity(), freeNow, job.demand());
             var detail = "fits; " + Math.round(utilisation * 100) + "% utilised after placement";
             return new CandidateEvaluation(worker.id(), worker.name(), Verdict.FITS, detail, score);
+        }
+
+        /** {@link #evaluate}'s verdict and score, in the same order of checks, without building any text. */
+        private CandidateEvaluation evaluateQuietly(PendingJob job, WorkerCandidate worker, Resources freeNow) {
+            Verdict verdict;
+            if (!worker.labels().containsAll(job.requiredLabels())) {
+                verdict = Verdict.MISSING_LABELS;
+            } else if (!worker.capacity().covers(job.demand())) {
+                verdict = Verdict.EXCEEDS_CAPACITY;
+            } else if (!worker.acceptingWork()) {
+                verdict = Verdict.NOT_ACCEPTING_WORK;
+            } else if (!freeNow.covers(job.demand())) {
+                verdict = Verdict.INSUFFICIENT_FREE_CAPACITY;
+            } else {
+                return new CandidateEvaluation(
+                        worker.id(),
+                        worker.name(),
+                        Verdict.FITS,
+                        "",
+                        policy.selection().score(job, worker, freeNow));
+            }
+            return new CandidateEvaluation(worker.id(), worker.name(), verdict, "", null);
         }
 
         /**

@@ -344,6 +344,30 @@ class AttemptExecutorTest {
         server.verify();
     }
 
+    /** The intake loop waits here while full; it must wake when a slot frees, not when its claim interval ends. */
+    @Test
+    void aWaitForAFreeSlot_endsWhenAnAttemptFinishes() throws Exception {
+        var first = assignment("delay", Map.of("durationMs", 600_000), 600);
+        executor.start(first, SECRET);
+        executor.start(assignment("delay", Map.of("durationMs", 600_000), 600), SECRET);
+        assertThat(executor.freeSlots()).isZero();
+
+        var started = System.nanoTime();
+        var waiter = Thread.ofVirtual().start(() -> {
+            try {
+                executor.awaitFreeSlot(Duration.ofSeconds(30));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        executor.abandon(first.attemptId());
+        waiter.join(Duration.ofSeconds(10));
+
+        assertThat(waiter.isAlive()).isFalse();
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(5));
+        executor.abandonAll();
+    }
+
     @Test
     void slotsBoundConcurrentAttempts() {
         executor.start(assignment("delay", Map.of("durationMs", 600_000), 600), SECRET);

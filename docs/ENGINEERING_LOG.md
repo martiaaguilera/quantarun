@@ -2,6 +2,54 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-06: Queue wait was three timers
+`benchmarks/e2e/bench.py` reads every job's timestamps from PostgreSQL after the run, so the driver's own latency does
+not count. The baseline matched the arithmetic of the polling intervals almost exactly:
+- At 5 jobs/s, placement waited 248 ms at p50, half the scheduler's 500 ms idle delay, and the claim waited 227 ms,
+  half the worker's 500 ms poll.
+- Under a burst, each freed slot sat idle for up to 500 + 500 ms around a 100 ms job, which capped 10 slots at about
+  15 jobs/s.
+
+Three changes, each measured on its own (single runs, BENCHMARKS.md has the repeated ones):
+- **Wake the scheduler** when a submission, revive or freed capacity commits (`PlacementSignal`). Placement p50 went
+  from 248 to 5 ms. Throughput did not move, which was the instructive part.
+- **Wake the worker's intake** when a slot frees. Claim latency under the burst got *worse* (296 → 511 ms p50). The
+  worker now asked the instant its slot freed, before the scheduler, woken by the same report, had placed anything.
+  The empty answer sent it back to sleep for a full claim interval.
+- **Make the claim wait** for the placement instead (`waitMillis` and `AssignmentSignal`). This fixed the race above:
+  time to start fell to 14 ms at p50, and the burst rose to 42.9 jobs/s.
+
+Long polling had been rejected in Phase 5 as unnecessary at this scale. The measurement says otherwise: at any scale,
+the poll interval was the job's latency.
+
+## 2026-10-06: The scheduler waited on locks, not on the CPU
+After the timers, the burst ran at 43 jobs/s against a 100 jobs/s ceiling.
+- **JFR:** only 6 of 572 samples were inside the scheduling cycle, so it was not computing.
+- **pg_stat_statements:** the top statement by total time was the report's capacity release, `UPDATE workers`, at
+  29 ms per call. It was waiting for the worker row locks that every cycle holds from start to commit.
+- **The cycle:** it sent about 190 `UPDATE jobs SET scheduling_outcome ...` per pass, one per waiting job in its
+  window. Each took 0.02 ms in PostgreSQL but a full round trip, all while holding those locks.
+
+Batching them into one `UPDATE ... FROM unnest(...) RETURNING id` cut the mean placing cycle from 63.5 to 27.8 ms and
+the release wait from 29 to 7 ms. Throughput rose to 50.6 jobs/s.
+
+A dead end, measured and reverted: moving the release to the end of the report transaction, so a report holds the
+worker lock for one statement instead of four. It made no difference (50.6 against 50.8 jobs/s), because reports
+were waiting on cycles, not on each other. The rest of the gap is the cycle's lock hold, which is what serialises
+quota decisions (I17). Shortening it means planning before locking and re-validating afterwards, which is a design
+change with its own race tests, not a tuning step.
+
+## 2026-10-06: The simulator built explanations nobody read
+A 20,000-job `BURST` comparison took 30–33 s for six policies. JFR put the time in the planner. Every cycle explained
+every waiting job in its 200-job window (strings for reasons and candidate verdicts), and the simulator then used only
+the placements. `PlacementPlanner.placementsOnly` shares the placement logic without the text. It also stops once no
+accepting worker has a free slot, because every placement needs one. The run now takes 11.4–13.0 s.
+
+Speed must not change a result. The 48 result hashes (8 scenarios × 6 policies) were recorded before the change and
+are pinned by `SimulationGoldenTest`; the 20,000-job hashes and metrics matched too. A property test compares lean and
+explaining plans over random snapshots. Its first version had no quotas, and a mutant that dropped the lean path's
+quota check survived it, since the simulator's scenarios set no quotas either. Random project quotas now kill it.
+
 ## 2026-10-04: A database outage looked like the death of every worker
 Phase 12 asks what happens when PostgreSQL restarts. We stopped it for 25 polls while 10 jobs of 8 s ran. Correctness
 held: every job succeeded once and every reservation matched. Liveness did not: all 10 running attempts were lost and
@@ -96,7 +144,7 @@ the same rule. Without it, a rolled-back placement left a phantom `job.schedule`
 In a first load look (300 jobs of 300 ms on 10 slots), the queue drained in about 24 s for 9 s of work. Queue wait
 was 12.4 s at p50 and 21.5 s at p95. Between `job.schedule` and `attempt.run` the trace shows about 520 ms: the
 worker's claim poll. After a report, the scheduler can also be in its 500 ms idle pause. Not changed here: it is
-Phase 13's to measure properly and fix with before and after data.
+Phase 13's to measure properly and fix with before and after data. (Done: see "Queue wait was three timers".)
 
 ## 2026-10-04: The first live chaos runs found two defects
 **A heartbeating worker that never claims held its work forever.** Heartbeats renewed every unclaimed (ASSIGNED)

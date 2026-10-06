@@ -48,14 +48,21 @@ public class JobLifecycle {
     private final Projects projects;
     private final JobTracing tracing;
     private final JobMetrics metrics;
+    private final PlacementSignal placementSignal;
 
     JobLifecycle(
-            JobRepository jobs, JobEventRepository events, Projects projects, JobTracing tracing, JobMetrics metrics) {
+            JobRepository jobs,
+            JobEventRepository events,
+            Projects projects,
+            JobTracing tracing,
+            JobMetrics metrics,
+            PlacementSignal placementSignal) {
         this.jobs = jobs;
         this.events = events;
         this.projects = projects;
         this.tracing = tracing;
         this.metrics = metrics;
+        this.placementSignal = placementSignal;
     }
 
     /**
@@ -84,6 +91,7 @@ public class JobLifecycle {
                     .addKeyValue("jobId", job.id())
                     .addKeyValue("projectId", projectId)
                     .log("Job submitted");
+            placementSignal.raiseAfterCommit();
             return new SubmissionResult.Created(job);
         }
 
@@ -157,6 +165,7 @@ public class JobLifecycle {
                     JobEventType.REVIVED,
                     Map.of("reviveCount", job.reviveCount(), "attemptBudget", job.maxAttempts()));
             log.atInfo().addKeyValue("jobId", jobId).log("Job revived");
+            placementSignal.raiseAfterCommit();
             return job;
         }
         var current = jobs.findById(jobId).orElseThrow(() -> new JobNotFoundException(jobId));

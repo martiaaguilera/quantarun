@@ -5,8 +5,10 @@ import io.github.martiaaguilera.quantarun.controlplane.jobs.internal.JobReposito
 import java.time.Duration;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -41,15 +43,22 @@ public class JobPlacement {
     }
 
     private final JdbcClient jdbc;
+    private final AssignmentSignal assignmentSignal;
     private final JobRepository jobs;
     private final JobEventRepository events;
     private final JobTracing tracing;
 
-    JobPlacement(JdbcClient jdbc, JobRepository jobs, JobEventRepository events, JobTracing tracing) {
+    JobPlacement(
+            JdbcClient jdbc,
+            JobRepository jobs,
+            JobEventRepository events,
+            JobTracing tracing,
+            AssignmentSignal assignmentSignal) {
         this.jdbc = jdbc;
         this.jobs = jobs;
         this.events = events;
         this.tracing = tracing;
+        this.assignmentSignal = assignmentSignal;
     }
 
     /**
@@ -126,6 +135,7 @@ public class JobPlacement {
             // The row is locked by this transaction, so its status cannot have changed underneath us.
             throw new IllegalStateException("Job " + job.id() + " left the runnable states while locked");
         }
+        assignmentSignal.raiseAfterCommit(workerId);
         events.append(
                 job.id(),
                 attemptId,
@@ -134,21 +144,41 @@ public class JobPlacement {
         return attemptId;
     }
 
+    /** Why a job is still waiting after a cycle. */
+    public record Waiting(UUID jobId, String outcome, String reason) {}
+
     /**
-     * Records why a job is still waiting. Returns true only when the outcome or reason changed, so the scheduler can
-     * write a decision record for changes alone instead of one per cycle.
+     * Records why jobs are still waiting, in one statement. Returns the jobs whose outcome or reason changed, so the
+     * scheduler writes a decision record for changes alone instead of one per cycle. One statement, not one per job:
+     * a cycle over a 200-job window sent about 190 of these while holding every live worker's row lock, and reports
+     * releasing capacity queued behind those locks (BENCHMARKS.md). The rows are already locked by this cycle's window.
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public boolean recordWaiting(UUID jobId, String outcome, String reason) {
-        return jdbc.sql("""
-                        UPDATE jobs SET scheduling_outcome = :outcome, scheduling_reason = :reason
-                        WHERE id = :id
-                          AND (scheduling_outcome IS DISTINCT FROM :outcome OR scheduling_reason IS DISTINCT FROM :reason)
+    public Set<UUID> recordWaiting(List<Waiting> waiting) {
+        if (waiting.isEmpty()) {
+            return Set.of();
+        }
+        var ids = new String[waiting.size()];
+        var outcomes = new String[waiting.size()];
+        var reasons = new String[waiting.size()];
+        for (int i = 0; i < waiting.size(); i++) {
+            ids[i] = waiting.get(i).jobId().toString();
+            outcomes[i] = waiting.get(i).outcome();
+            reasons[i] = waiting.get(i).reason();
+        }
+        return new HashSet<>(jdbc.sql("""
+                        UPDATE jobs j SET scheduling_outcome = w.outcome, scheduling_reason = w.reason
+                        FROM unnest(CAST(:ids AS uuid[]), CAST(:outcomes AS text[]), CAST(:reasons AS text[]))
+                             AS w(id, outcome, reason)
+                        WHERE j.id = w.id
+                          AND (j.scheduling_outcome IS DISTINCT FROM w.outcome
+                               OR j.scheduling_reason IS DISTINCT FROM w.reason)
+                        RETURNING j.id
                         """)
-                        .param("outcome", outcome)
-                        .param("reason", reason)
-                        .param("id", jobId)
-                        .update()
-                == 1;
+                .param("ids", ids)
+                .param("outcomes", outcomes)
+                .param("reasons", reasons)
+                .query(UUID.class)
+                .list());
     }
 }

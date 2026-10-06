@@ -1,6 +1,7 @@
 package io.github.martiaaguilera.quantarun.controlplane.execution;
 
 import io.github.martiaaguilera.quantarun.controlplane.chaos.ChaosExperiments;
+import io.github.martiaaguilera.quantarun.controlplane.jobs.AssignmentSignal;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.JobAttempts;
 import io.github.martiaaguilera.quantarun.controlplane.jobs.LeaseContinuity;
 import io.github.martiaaguilera.quantarun.controlplane.web.ApiException;
@@ -12,6 +13,7 @@ import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.AttemptOutcome
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol.FailureClass;
 import jakarta.validation.Valid;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -34,9 +36,13 @@ import tools.jackson.databind.json.JsonMapper;
 @RequestMapping(WorkerProtocol.BASE_PATH)
 class ExecutionController {
 
+    /** How often a waiting claim looks in the database even without a signal: the old polling interval. */
+    static final Duration CLAIM_RECHECK = Duration.ofMillis(500);
+
     private final WorkerRegistry registry;
     private final JobAttempts attempts;
     private final LeaseContinuity continuity;
+    private final AssignmentSignal assignmentSignal;
     private final ChaosExperiments chaos;
     private final JsonMapper json;
 
@@ -44,11 +50,13 @@ class ExecutionController {
             WorkerRegistry registry,
             JobAttempts attempts,
             LeaseContinuity continuity,
+            AssignmentSignal assignmentSignal,
             ChaosExperiments chaos,
             JsonMapper json) {
         this.registry = registry;
         this.attempts = attempts;
         this.continuity = continuity;
+        this.assignmentSignal = assignmentSignal;
         this.chaos = chaos;
         this.json = json;
     }
@@ -74,15 +82,36 @@ class ExecutionController {
      * A DRAINING worker may still claim: the scheduler never places new work on it, so anything ASSIGNED to it was
      * placed before the drain and is already its work. Refusing would leave that attempt unclaimed while heartbeats
      * keep renewing its lease, and the job would never run.
+     *
+     * <p>With {@code waitMillis}, an empty claim waits for a placement on this worker instead of answering at once.
+     * The wait holds no transaction and no connection; each claim is its own short transaction. It also rechecks the
+     * database every {@link #CLAIM_RECHECK}, so work placed by another control-plane instance is found as fast as the
+     * worker's old polling found it.
      */
     @PostMapping("/claim")
     WorkerProtocol.ClaimResponse claim(
             @RequestAttribute(WorkerAuthenticationFilter.PRINCIPAL_ATTRIBUTE) WorkerPrincipal principal,
-            @Valid @RequestBody WorkerProtocol.ClaimRequest request) {
+            @Valid @RequestBody WorkerProtocol.ClaimRequest request)
+            throws InterruptedException {
         var workerId = principal.requireRegisteredWorker();
         registry.requireLive(workerId);
-        continuity.catchUp();
-        var assignments = attempts.claim(workerId, request.maxAssignments()).stream()
+        var deadline = System.nanoTime()
+                + Duration.ofMillis(request.waitMillis() == null ? 0 : request.waitMillis())
+                        .toNanos();
+        while (true) {
+            var waiter = assignmentSignal.register(workerId);
+            continuity.catchUp();
+            var claimed = attempts.claim(workerId, request.maxAssignments());
+            var remaining = deadline - System.nanoTime();
+            if (!claimed.isEmpty() || remaining <= 0) {
+                return new WorkerProtocol.ClaimResponse(assignments(claimed));
+            }
+            waiter.await(Duration.ofNanos(Math.min(remaining, CLAIM_RECHECK.toNanos())));
+        }
+    }
+
+    private static List<WorkerProtocol.Assignment> assignments(List<JobAttempts.Claimed> attempts) {
+        return attempts.stream()
                 .map(claimed -> new WorkerProtocol.Assignment(
                         claimed.attemptId(),
                         claimed.jobId(),
@@ -97,7 +126,6 @@ class ExecutionController {
                                         claimed.lastCheckpoint().result()),
                         claimed.traceParent()))
                 .toList();
-        return new WorkerProtocol.ClaimResponse(assignments);
     }
 
     @PostMapping("/attempts/{attemptId}/report")

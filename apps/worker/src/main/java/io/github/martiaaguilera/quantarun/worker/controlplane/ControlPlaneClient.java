@@ -1,6 +1,7 @@
 package io.github.martiaaguilera.quantarun.worker.controlplane;
 
 import io.github.martiaaguilera.quantarun.protocol.WorkerProtocol;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpHeaders;
@@ -56,11 +57,11 @@ public class ControlPlaneClient {
                 .body(WorkerProtocol.HeartbeatResponse.class);
     }
 
-    public WorkerProtocol.ClaimResponse claim(String workerSecret, int maxAssignments) {
+    public WorkerProtocol.ClaimResponse claim(String workerSecret, int maxAssignments, Duration wait) {
         return http.post()
                 .uri(WorkerProtocol.BASE_PATH + "/claim")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + workerSecret)
-                .body(new WorkerProtocol.ClaimRequest(maxAssignments))
+                .body(new WorkerProtocol.ClaimRequest(maxAssignments, (int) wait.toMillis()))
                 .retrieve()
                 .onStatus(status -> status.value() == HttpStatus.CONFLICT.value(), (request, response) -> {
                     throw new RegistrationRetiredException();

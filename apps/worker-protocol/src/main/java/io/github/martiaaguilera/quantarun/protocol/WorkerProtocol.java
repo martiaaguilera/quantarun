@@ -117,8 +117,22 @@ public final class WorkerProtocol {
         DRAINING
     }
 
-    /** @param maxAssignments how many assignments the worker can start now (its free execution slots). */
-    public record ClaimRequest(@NotNull @Min(1) @Max(256) Integer maxAssignments) {}
+    /**
+     * @param maxAssignments how many assignments the worker can start now (its free execution slots).
+     * @param waitMillis how long the control plane may hold the request when nothing is assigned yet, answering as soon
+     *     as something is placed on this worker. Absent or 0 answers at once. Capped, so the request ends well within
+     *     the worker's HTTP timeout.
+     */
+    public record ClaimRequest(
+            @NotNull @Min(1) @Max(256) Integer maxAssignments,
+            @Min(0) @Max(MAX_CLAIM_WAIT_MILLIS) Integer waitMillis) {
+
+        public ClaimRequest(Integer maxAssignments) {
+            this(maxAssignments, null);
+        }
+    }
+
+    public static final int MAX_CLAIM_WAIT_MILLIS = 5_000;
 
     /**
      * Work the scheduler placed on this worker. Claiming starts the attempt: from here on the worker owns it until it

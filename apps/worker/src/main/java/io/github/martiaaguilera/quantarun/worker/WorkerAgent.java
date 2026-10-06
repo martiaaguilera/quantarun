@@ -7,6 +7,7 @@ import io.github.martiaaguilera.quantarun.worker.execution.AttemptExecutor;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.random.RandomGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -124,7 +125,9 @@ public class WorkerAgent {
             return settings.claimInterval();
         }
         try {
-            var assignments = controlPlane.claim(current.secret(), free).assignments();
+            var assignments = controlPlane
+                    .claim(current.secret(), free, settings.claimWait())
+                    .assignments();
             consecutiveClaimFailures = 0;
             for (var assignment : assignments) {
                 log.atInfo()
@@ -135,8 +138,12 @@ public class WorkerAgent {
                         .log("Attempt claimed");
                 executor.start(assignment, current.secret());
             }
-            // Work was waiting, so more may be: ask again at once instead of idling.
-            return assignments.isEmpty() ? settings.claimInterval() : Duration.ZERO;
+            // Work was waiting, so more may be: ask again at once instead of idling. An empty answer to a waiting claim
+            // already spent the wait at the control plane, so the next one can start at once too.
+            if (!assignments.isEmpty() || !settings.claimWait().isZero()) {
+                return Duration.ZERO;
+            }
+            return settings.claimInterval();
         } catch (ControlPlaneClient.RegistrationRetiredException e) {
             // The membership loop notices on its next heartbeat and registers again.
             return settings.claimInterval();
@@ -144,6 +151,15 @@ public class WorkerAgent {
             consecutiveClaimFailures++;
             log.atDebug().addKeyValue("error", e.getMessage()).log("Claim failed");
             return backoff.delayForFailure(consecutiveClaimFailures, random);
+        }
+    }
+
+    /** The intake loop's pause: cut short when a busy worker frees a slot, since that slot can take work at once. */
+    void awaitIntake(Duration delay) throws InterruptedException {
+        if (executor.freeSlots() == 0) {
+            executor.awaitFreeSlot(delay);
+        } else {
+            TimeUnit.MILLISECONDS.sleep(delay.toMillis());
         }
     }
 

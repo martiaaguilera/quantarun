@@ -48,7 +48,7 @@ How it is put together:
 - **Provider calls** (`mock-inference` and `http`) are Micrometer observations: a span, and the timer in the metrics
   below.
 
-Not traced, on purpose: worker registration, heartbeats and claim polling (every 500 ms), actuator requests and
+Not traced, on purpose: worker registration, heartbeats and claims, actuator requests and
 `@Scheduled` housekeeping (the reaper, the liveness monitor, gauge refreshes). In the first live run each of these
 became a trace of its own, several per second, and buried the job traces. An `ObservationPredicate` in each process
 skips them. This also removes them from `http.server.requests`. Their health is visible in worker liveness, lease
@@ -79,8 +79,9 @@ fault (Retry-After 1 s) was pending on every worker. The trace read back from Ja
   3287.4 ms    16.0 ms  control-plane          http post /worker-api/v1/attempts/{attemptId}/report
 ```
 
-13 spans from two services, one trace. The gap between `job.schedule` and `attempt.run` (about 520 ms) is the
-worker's claim poll interval. It is now visible, and it is the first thing Phase 13 will look at.
+13 spans from two services, one trace. The gap between `job.schedule` and `attempt.run` (about 520 ms) was the
+worker's claim poll interval. Phase 13 replaced the poll with a claim that waits for the placement, and the gap is
+now a few milliseconds (BENCHMARKS.md).
 
 ## Metrics
 
@@ -138,8 +139,8 @@ under BIN_PACKING. Read from Prometheus:
 
 The work was 9 s of slot time, and the queue drained in about 24 s. Each slot turnover cost far more than the job's
 300 ms: the report, then the scheduler's idle delay when the previous cycle found no free slot, then the worker's
-500 ms claim poll. That is where Phase 13 starts. These are single runs, not benchmarks; the benchmark methodology is
-in BENCHMARKS.md once it exists.
+500 ms claim poll. These are single runs, not benchmarks. Phase 13 measured the same costs with a repeatable driver
+and removed them; the numbers are in BENCHMARKS.md.
 
 ## Logs
 

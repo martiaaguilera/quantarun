@@ -58,6 +58,7 @@ class WorkerAgentExecutionTest {
                 Duration.ofSeconds(1),
                 Duration.ofSeconds(30),
                 Duration.ofMillis(500),
+                Duration.ZERO,
                 Duration.ofSeconds(5),
                 3,
                 List.of(),

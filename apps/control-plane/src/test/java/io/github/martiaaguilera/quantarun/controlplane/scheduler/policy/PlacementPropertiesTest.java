@@ -62,6 +62,33 @@ class PlacementPropertiesTest {
         }
     }
 
+    /**
+     * The simulator's lean mode must place exactly what the explaining planner places, in the same order, and leave the
+     * same virtual times: it only leaves out the explanations and stops once no slot is open.
+     */
+    @ParameterizedTest
+    @EnumSource(SchedulingPolicy.class)
+    void placementsOnly_placesExactlyWhatTheFullPlanPlaces(SchedulingPolicy policy) {
+        for (long seed = 1; seed <= CASES; seed++) {
+            var random = new SplittableRandom(seed);
+            var snapshot = withRandomProjects(randomSnapshot(random), random);
+
+            var full = PlacementPlanner.plan(snapshot, policy);
+            var lean = PlacementPlanner.placementsOnly(snapshot, policy);
+
+            var fullPlacements = full.decisions().stream()
+                    .filter(d -> d.outcome() == Outcome.PLACED)
+                    .map(d -> d.job().id() + "->" + d.chosenWorkerId())
+                    .toList();
+            var leanPlacements = lean.decisions().stream()
+                    .map(d -> d.job().id() + "->" + d.chosenWorkerId())
+                    .toList();
+            assertThat(leanPlacements).as("seed %d", seed).isEqualTo(fullPlacements);
+            assertThat(lean.virtualTimes()).as("seed %d", seed).isEqualTo(full.virtualTimes());
+            assertThat(lean.systemVirtualTime()).as("seed %d", seed).isEqualTo(full.systemVirtualTime());
+        }
+    }
+
     private static void assertInvariants(SchedulingSnapshot snapshot, List<PlacementDecision> plan) {
         assertThat(plan).hasSameSizeAs(snapshot.jobs());
         assertThat(plan.stream().map(d -> d.job().id()).distinct()).hasSameSizeAs(snapshot.jobs());
@@ -143,6 +170,27 @@ class PlacementPropertiesTest {
                     random.nextInt(4) == 0 ? randomLabels(random) : Set.of()));
         }
         return new SchedulingSnapshot(NOW, jobs, workers);
+    }
+
+    /** Gives the snapshot's projects random weights, virtual times and quotas, some of them already reached. */
+    private static SchedulingSnapshot withRandomProjects(SchedulingSnapshot snapshot, SplittableRandom random) {
+        var projects = new HashMap<UUID, SchedulingSnapshot.ProjectState>();
+        for (var job : snapshot.jobs()) {
+            projects.computeIfAbsent(job.projectId(), id -> {
+                var running = random.nextInt(0, 4);
+                return new SchedulingSnapshot.ProjectState(
+                        id,
+                        id.toString(),
+                        random.nextInt(1, 4),
+                        random.nextDouble() * 10,
+                        random.nextBoolean() ? random.nextInt(1, 6) : null,
+                        random.nextBoolean() ? random.nextInt(0, 4) : null,
+                        running,
+                        random.nextInt(0, 3));
+            });
+        }
+        return new SchedulingSnapshot(
+                snapshot.now(), snapshot.jobs(), snapshot.workers(), projects, random.nextDouble() * 5);
     }
 
     private static Set<String> randomLabels(SplittableRandom random) {
