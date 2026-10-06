@@ -75,8 +75,8 @@ All four came from a manual review of every endpoint against the threats above. 
   low-cardinality tags, no ids or payloads, and the ports bind to `127.0.0.1`. Scraping across machines needs a
   network policy or authentication.
 - **The automated Claude Security scan has not run.** It needs the owner's go-ahead for its time and token cost. This
-  review was manual. The scan is the next step before release (Phase 15), and anything high or critical it finds
-  is fixed before the release.
+  review was manual, and so was the Phase 15 final review (FINAL_REVIEW.md). The scan still waits for that
+  go-ahead; anything high or critical it finds is to be fixed before it is called done.
 
 ## Out of scope
 

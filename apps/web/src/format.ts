@@ -84,9 +84,12 @@ export function formatCount(value: number): string {
   return value.toLocaleString()
 }
 
-/** The first eight characters of a UUID: enough to tell rows apart, with the full id in the title. */
+/**
+ * The last eight characters of a UUID, with the full id in the title. The ids are UUIDv7, whose leading characters are
+ * a timestamp: jobs or workers created in the same second share them, so only the random tail tells rows apart.
+ */
 export function shortId(id: string | null | undefined): string {
-  return id ? id.slice(0, 8) : '–'
+  return id ? id.slice(-8) : '–'
 }
 
 export function humanize(constant: string): string {

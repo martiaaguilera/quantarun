@@ -65,9 +65,9 @@ export function OverviewPage() {
                   ]}
                 />
                 <p className="muted small">
-                  Finished so far: {data.jobs.byStatus.SUCCEEDED.toLocaleString()} succeeded,{' '}
-                  {data.jobs.byStatus.FAILED.toLocaleString()} failed, {data.jobs.byStatus.DEAD.toLocaleString()} dead,{' '}
-                  {data.jobs.byStatus.CANCELLED.toLocaleString()} cancelled.
+                  Finished in the last hour: {data.jobs.succeededLastHour.toLocaleString()} succeeded,{' '}
+                  {data.jobs.failedLastHour.toLocaleString()} failed, {data.jobs.deadLastHour.toLocaleString()} dead,{' '}
+                  {data.jobs.cancelledLastHour.toLocaleString()} cancelled.
                 </p>
               </Panel>
               {data.fleet ? (
