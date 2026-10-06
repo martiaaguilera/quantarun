@@ -27,7 +27,7 @@ side effects; `staged` writes only its own checkpoints, which are fenced.
 | Worker shut down gracefully before the attempt finished | worker (after its grace period) | FAILED | TRANSIENT | retry with backoff |
 | Job cancelled while running | worker sees it in the heartbeat response | CANCELLED | – | job CANCELLED |
 | Lease expired (worker crashed, hung or partitioned) | control plane (lease reaper) | LOST | WORKER_LOST | retry **at once**, or CANCELLED if a cancel was pending |
-| Out of memory in the `memory` workload | worker | FAILED | RESOURCE_EXHAUSTED | retry with backoff |
+| `memory` workload asks for more than the worker's budget (half the heap, shared by its running memory attempts) | worker, before allocating | FAILED | RESOURCE_EXHAUSTED | retry with backoff |
 | `http`: target refused by the SSRF guard, bad URL or method | worker | FAILED | INVALID_INPUT | job FAILED |
 | `http`: 429 | worker | FAILED | RATE_LIMITED, with the provider's Retry-After | retry after max(Retry-After, backoff) |
 | `http`: 502, 503, 504 / other 5xx / 408 / other 4xx | worker | FAILED | PROVIDER_UNAVAILABLE / TRANSIENT / TIMEOUT / NON_RETRYABLE | per class |

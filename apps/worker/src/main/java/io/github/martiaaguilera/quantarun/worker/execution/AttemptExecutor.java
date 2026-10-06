@@ -326,7 +326,7 @@ public class AttemptExecutor implements AutoCloseable {
                     classified.failureClass(),
                     bounded(classified.getMessage()),
                     null,
-                    retryAfter == null ? null : Math.min(retryAfter.toMillis(), MAX_RETRY_AFTER_MILLIS));
+                    retryAfter == null ? null : cappedMillis(retryAfter));
         }
         if (failure != null) {
             log.atWarn()
@@ -340,6 +340,12 @@ public class AttemptExecutor implements AutoCloseable {
             return failed(FailureClass.INTERNAL, "interrupted without a stop request");
         }
         return new WorkerProtocol.ReportRequest(AttemptOutcome.SUCCEEDED, null, null, result, null);
+    }
+
+    /** Compared as a Duration first: a target's Retry-After can exceed what {@code toMillis} can represent. */
+    private static long cappedMillis(Duration retryAfter) {
+        var cap = Duration.ofMillis(MAX_RETRY_AFTER_MILLIS);
+        return retryAfter.compareTo(cap) > 0 ? MAX_RETRY_AFTER_MILLIS : retryAfter.toMillis();
     }
 
     private Workload workload(String type) {

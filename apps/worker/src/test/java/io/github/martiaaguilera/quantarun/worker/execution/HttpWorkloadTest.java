@@ -173,6 +173,41 @@ class HttpWorkloadTest {
     }
 
     @Test
+    void aRateLimitedOrUnavailableTarget_isAskedOnce_andTheAnswerComesBackAtOnce() {
+        // The HTTP client's own retry strategy would sleep out the Retry-After while holding the worker slot, and ask
+        // again. Classification and the retry policy decide instead.
+        assertThatThrownBy(() -> allowingLoopback.execute(payload(Map.of("url", url("/limited"))), context()))
+                .isInstanceOf(WorkloadFailure.class);
+        assertThat(hits.get()).isEqualTo(1);
+    }
+
+    @Test
+    void aJvmWideProxy_isNotUsed_soTheFilterSeesTheRealTarget() throws IOException {
+        var proxyHits = new AtomicInteger();
+        var proxy = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        proxy.createContext("/", exchange -> {
+            proxyHits.incrementAndGet();
+            exchange.sendResponseHeaders(502, -1);
+            exchange.close();
+        });
+        proxy.start();
+        var previous = java.net.ProxySelector.getDefault();
+        java.net.ProxySelector.setDefault(java.net.ProxySelector.of(proxy.getAddress()));
+        try {
+            var result = allowingLoopback.execute(payload(Map.of("url", url("/ok"))), context());
+
+            assertThat(result).containsEntry("status", 200);
+            assertThat(hits.get()).isEqualTo(1);
+            assertThat(proxyHits.get()).isZero();
+        } catch (InterruptedException e) {
+            throw new AssertionError(e);
+        } finally {
+            java.net.ProxySelector.setDefault(previous);
+            proxy.stop(0);
+        }
+    }
+
+    @Test
     void statusCodes_mapToFailureClasses() {
         assertFailure("/down", FailureClass.PROVIDER_UNAVAILABLE);
         assertFailure("/missing", FailureClass.NON_RETRYABLE);

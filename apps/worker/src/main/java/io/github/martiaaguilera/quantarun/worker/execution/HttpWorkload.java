@@ -20,6 +20,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.apache.hc.client5.http.impl.DefaultSchemePortResolver;
+import org.apache.hc.client5.http.impl.routing.DefaultRoutePlanner;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
 import org.springframework.boot.http.client.FilteredHostException;
@@ -83,6 +85,13 @@ final class HttpWorkload implements Workload {
         rejectBlockedLiteral(uri.getHost());
 
         var factory = ClientHttpRequestFactoryBuilder.httpComponents()
+                .withHttpClientCustomizer(client -> client
+                        // Left on, the client sleeps out a 429's or 503's Retry-After itself (however long the target
+                        // asks), holding the worker slot, then sends the request again. The retry policy decides.
+                        .disableAutomaticRetries()
+                        // Always connect directly. Through a proxy, the address filter would vet the proxy's address,
+                        // not the target's.
+                        .setRoutePlanner(new DefaultRoutePlanner(DefaultSchemePortResolver.INSTANCE)))
                 .build(HttpClientSettings.defaults()
                         .withTimeouts(connectTimeout, timeout)
                         .withRedirects(HttpRedirects.DONT_FOLLOW)

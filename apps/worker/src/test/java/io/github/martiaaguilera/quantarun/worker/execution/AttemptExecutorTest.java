@@ -431,6 +431,49 @@ class AttemptExecutorTest {
     }
 
     @Test
+    void anAbsurdRetryAfterFromATarget_isReportedAtTheProtocolCap() throws Exception {
+        // A tenant-chosen target controls this header. Converting ~3 billion years to milliseconds overflows, which
+        // used to abort the report: the attempt then surfaced 15 s later as a lost worker instead of RATE_LIMITED.
+        var target = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0);
+        target.createContext("/limited", exchange -> {
+            exchange.getResponseHeaders().add("Retry-After", "99999999999999999");
+            exchange.sendResponseHeaders(429, -1);
+            exchange.close();
+        });
+        target.start();
+        var builder = RestClient.builder().baseUrl(BASE);
+        var controlPlane = MockRestServiceServer.bindTo(builder).build();
+        var allowingLoopback = new AttemptExecutor(
+                new ControlPlaneClient(builder.build(), "bootstrap-token-0123456789-0123456789"),
+                1,
+                new AttemptExecutor.ReportPolicy(3, Duration.ofMillis(1), Duration.ofMillis(5)),
+                new AttemptExecutor.HttpSettings(List.of("127.0.0.1/32"), Duration.ofSeconds(1)),
+                chaos,
+                telemetry,
+                RandomGenerator.of("L64X128MixRandom"));
+        try {
+            var attempt = assignment(
+                    "http",
+                    Map.of("url", "http://127.0.0.1:" + target.getAddress().getPort() + "/limited"),
+                    30);
+            controlPlane
+                    .expect(once(), requestTo(reportUrl(attempt)))
+                    .andExpect(jsonPath("$.failureClass").value("RATE_LIMITED"))
+                    .andExpect(jsonPath("$.retryAfterMillis").value(3_600_000))
+                    .andRespond(accepted(attempt, "RETRY_WAIT"));
+
+            allowingLoopback.start(attempt, SECRET);
+
+            assertThat(allowingLoopback.awaitIdle(IDLE_TIMEOUT)).isTrue();
+            controlPlane.verify();
+        } finally {
+            allowingLoopback.close();
+            target.stop(0);
+        }
+    }
+
+    @Test
     void retryAfter_isOnlySentForRateLimiting() throws Exception {
         var attempt = assignment("fail", Map.of("failureClass", "TRANSIENT", "retryAfterMillis", 15_000), 30);
         expectReport(attempt)
