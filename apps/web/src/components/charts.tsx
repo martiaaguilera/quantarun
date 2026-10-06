@@ -69,7 +69,8 @@ export function BarChart({
             const h = max === 0 ? 0 : ((plotBottom - plotTop) * bar.value) / max
             const x = slot * index + (slot - barWidth) / 2
             const y = plotBottom - h
-            const isBest = best !== null && bar === best && bars.length > 1
+            // Ties are all labelled: picking one of two equal bars would claim a difference that is not there.
+            const isBest = best !== null && bar.value === best.value && bars.length > 1
             return (
               <g key={bar.label} onMouseEnter={() => { setHover(index) }}>
                 {/* The hit target spans the whole slot, bigger than the bar itself. */}
