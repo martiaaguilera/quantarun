@@ -71,7 +71,17 @@ public final class ExecutionFixture {
         return lifecycle.submit(project, submission, null).job().id();
     }
 
+    /**
+     * Heartbeats every test worker, as live workers do every few seconds. Without it a test that runs longer than the
+     * late threshold (7 s) on a slow machine sees its workers turn LATE and correctly receive no more work.
+     */
+    public void heartbeatAllWorkers() {
+        jdbc.sql("UPDATE worker_heartbeats SET last_seen_at = now(), beats = beats + 1")
+                .update();
+    }
+
     public int place() {
+        heartbeatAllWorkers();
         return cycle.runCycle(SchedulingPolicy.FIFO).placed();
     }
 

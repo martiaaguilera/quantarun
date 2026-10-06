@@ -2,6 +2,18 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-06: The fair-share failure was a heartbeat going stale
+The one unexplained test failure (2026-10-02, below) came back during the release verification on a slower machine
+(Windows, Docker Desktop), together with a second one: `FairShareSchedulingTest.weightsSetTheShareOfService_acrossCycles`
+stopped at round 6 with every queued job's verdict saying the shared worker's heartbeat was LATE, and one run of
+`SchedulingCycleTest.concurrentCycles_neverOvercommitOrDoublePlace` placed nothing. No invariant was violated in
+either. The 2026-10-02 entry was wrong to say no code path was time-dependent: the test workers heartbeat once, when
+the fixture registers them, and the planner correctly gives no new work to a worker silent for 7 s or more. A run
+three times slower than usual crosses that threshold mid-test. The tests now heartbeat their workers before each
+cycle, as live workers do every few seconds. The thresholds are unchanged, and the heartbeats touch only
+`worker_heartbeats`, which no cycle locks, so the concurrency test races exactly what it raced before. The lesson: a
+test that reads `now()` is time-dependent even when it never sleeps.
+
 ## 2026-10-06: The OOM handler that could never run
 The release security review asked of each workload what the worst payload makes a worker do. For `memory`, the
 answer was in the Dockerfile, not the Java. The workload caught `OutOfMemoryError` and reported RESOURCE_EXHAUSTED,
@@ -235,7 +247,7 @@ held, so ids follow the lock order. The same caveat applies to every timeline bu
 transactions that race on one row, the event id is the order and `occurred_at` is approximate. The events API
 already orders by id.
 
-## 2026-10-02 — An unexplained failure of the weighted fair-share test (open; not recurred in 75 repeated runs)
+## 2026-10-02 — An unexplained failure of the weighted fair-share test (explained on 2026-10-06, above)
 `FairShareSchedulingTest.weightsSetTheShareOfService_acrossCycles` failed once in a full `./mvnw verify` on the Phase 8
 branch, with 200 of the expected 320 jobs served. That is 25 full rounds of 8, after which nothing more finished. The
 run was about 3× slower than usual. The test passed in 23 later executions: 3 alone, 5 in full suites, and 15 in a
