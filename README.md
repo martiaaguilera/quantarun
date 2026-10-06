@@ -4,7 +4,7 @@ A local-first control plane for scheduling, executing, recovering, replaying and
 workloads. It uses PostgreSQL for coordination and OpenTelemetry for visibility, and runs at zero cost with no
 API keys.
 
-> **Status: early development (Phase 12 of 15).** Implemented so far: the job API with a centrally enforced state
+> **Status: early development (Phase 13 of 15).** Implemented so far: the job API with a centrally enforced state
 > machine, idempotent submission (proven with 500 concurrent duplicates on real PostgreSQL), cooperative
 > cancellation, project-scoped API keys and OpenAPI. On the fleet side: three heterogeneous workers that register with
 > per-worker credentials, heartbeat, drain and deregister; silent ones are retired, with a grace period after a
@@ -26,7 +26,9 @@ API keys.
 > console shows the queue, each job's story and lifeline, the fleet, scheduling decisions, the policy and chaos labs,
 > and updates live over Server-Sent Events. The concurrency guarantees are tested by running every actor at once against
 > real PostgreSQL, repeatedly, and a database outage under load loses no work
-> ([docs/INVARIANTS.md](docs/INVARIANTS.md)). This README only describes what exists.
+> ([docs/INVARIANTS.md](docs/INVARIANTS.md)). Performance is measured, not claimed: a lightly loaded job starts within
+> about 11 ms of submission, and every number comes with its date, commit and hardware
+> ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). This README only describes what exists.
 
 ## What it will be
 
