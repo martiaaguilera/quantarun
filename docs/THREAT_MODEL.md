@@ -37,7 +37,7 @@ that proves it. Residual risks are listed as such, not hidden. Reviewed in Phase
 
 | Threat | Mitigation | Proof |
 |---|---|---|
-| **SSRF** through the http workload | Addresses are filtered inside the HTTP client's DNS resolver, so DNS rebinding cannot swap a private address in after a check. Loopback, private, link-local (cloud metadata), CGNAT, multicast and reserved ranges are refused, and IP literals are refused up front as well. No redirects; http(s) only; GET and HEAD only; no credentials in URLs; 1 MiB response cap, of which only a hash is kept. An operator may allow specific IPs or CIDRs, never hostnames. | `HttpWorkloadTest` (22 cases: the metadata address `169.254.169.254`, RFC 1918, CGNAT, `0.0.0.0`, IPv6 loopback, unique-local and IPv4-mapped forms, a hostname resolving to loopback and blocked at connect time, redirects, methods, schemes, URLs with credentials, the response cap) |
+| **SSRF** through the http workload | Addresses are filtered inside the HTTP client's DNS resolver, so DNS rebinding cannot swap a private address in after a check. Loopback, private, link-local (cloud metadata), CGNAT, multicast and reserved ranges are refused, and IP literals are refused up front as well. Connections are always direct, never through a configured proxy, so the filter vets the real target. No redirects and no automatic retries; http(s) only; GET and HEAD only; no credentials in URLs; 1 MiB response cap, of which only a hash is kept. An operator may allow specific IPs or CIDRs, never hostnames. | `HttpWorkloadTest` (24 cases: the metadata address `169.254.169.254`, RFC 1918, CGNAT, `0.0.0.0`, IPv6 loopback, unique-local and IPv4-mapped forms, a hostname resolving to loopback and blocked at connect time, redirects, a JVM-wide proxy, methods, schemes, URLs with credentials, the response cap) |
 | **Arbitrary code execution** | There is none to reach. Workloads are a fixed set of built-in executors chosen by name (`delay`, `cpu-hash`, `mock-inference`, `fail`, `memory`, `staged`, `http`); a payload is data for one of them. No endpoint runs a command, a script or a class name from a request. | `WorkloadType` is an enum; an unknown type is `400 UNKNOWN_WORKLOAD_TYPE` (`JobApiTest$Validation`) |
 | **Oversized payloads** | 64 KiB per API and worker-API request body, enforced before authentication: a declared length over the limit is refused unread, and a chunked body is counted as it is read. Checkpoints are capped at 8 KiB, report results at 16 KiB (larger ones are replaced by a marker), messages at 1,000 characters, URLs at 2,048. Page sizes and decision candidate lists are capped. | `JobApiTest$Validation.bodyOverTheRequestLimit_is413…`, `RequestBodyLimitFilterTest` (chunked), `WorkerExecutionApiTest` (checkpoint size) |
 | **Secret leakage** | API keys and worker credentials are 256-bit random secrets with a scanner-friendly marker (`qr_`, `qw_`). Only their SHA-256 is stored, and they are compared in constant time. The admin token is compared in constant time and must be at least 32 characters. Property records redact their tokens in `toString`. No log line carries a credential. | `JobApiTest$Authentication.storedKeyMaterial_isHashNotPlaintext`, `SecretsNotLoggedTest` (fails when the filter logs the presented credential) |
@@ -58,6 +58,20 @@ All four came from a manual review of every endpoint against the threats above. 
 | One project key could hold all 50 event streams and lock the operator's console out. | Low (denial of service) | `6d8c854` |
 | The console was served without a Content-Security-Policy or `nosniff`. | Low (defence in depth against XSS) | `9d4e62e` |
 
+## Findings of the release review (2026-10-06)
+
+A second manual pass after Phase 15. It swept every SQL statement for string-built values, every mapping for its
+authenticated principal and authorization check, the worker's inbound surface, the console's credential handling,
+the CI workflow, and every bound on a tenant-controlled workload parameter. Three defects were found, all in what a
+tenant's own job can make a worker do, and all are fixed.
+
+| Finding | Severity | Fix |
+|---|---|---|
+| A tenant's `memory` job larger than the free heap ended the whole worker. The image runs with `-XX:+ExitOnOutOfMemoryError`, so the workload's `catch (OutOfMemoryError)` never ran, and every other tenant's attempt on that worker was lost and retried. | Medium (cross-tenant denial of service) | All memory attempts share a budget of half the heap, reserved before allocating; a job that does not fit fails as RESOURCE_EXHAUSTED. `MemoryWorkloadTest` runs the workload in a child JVM with the image's flags |
+| The http workload's client retried 429 and 503 itself and slept out the target's Retry-After first, however long, holding the worker slot; the target also got the request twice. | Low (a tenant's job holds its own slot, but past what the retry policy allows) | Automatic retries disabled; every response comes back to classification and the retry policy. `HttpWorkloadTest` |
+| With retries off, a Retry-After beyond what `Duration.toMillis` can hold made the worker drop its report; the attempt then surfaced 15 s later as a lost worker. | Low | The cap is compared as a Duration. `AttemptExecutorTest` |
+| (Hardening) A JVM-wide proxy setting would have routed the http workload through the proxy, where the address filter vets the proxy, not the target. This was listed as a residual risk. | – | The workload always connects directly. `HttpWorkloadTest` sets a proxy and checks it is not used |
+
 ## Residual risks, accepted and stated
 
 - **The bootstrap token admits workers.** Anyone holding it can register a worker and receive the payloads placed on
@@ -68,15 +82,12 @@ All four came from a manual review of every endpoint against the threats above. 
 - **API key prefixes are 32 bits.** The prefix only finds the row (the 256-bit secret is what authenticates), but it
   is unique. At tens of thousands of keys, issuing one could hit a collision and fail with 500. Not reached at this
   scale; a retry on conflict is the fix if it ever is.
-- **An HTTP proxy would bypass the SSRF filter's view.** If the worker JVM were configured with an outbound proxy, the
-  resolver filter would see the proxy's address, not the target's. The compose stack sets none. Do not add one
-  without moving the check to the proxy.
 - **`/actuator/prometheus` is unauthenticated** on the control plane and the workers. Metrics carry only
   low-cardinality tags, no ids or payloads, and the ports bind to `127.0.0.1`. Scraping across machines needs a
   network policy or authentication.
-- **The automated Claude Security scan has not run.** It needs the owner's go-ahead for its time and token cost. This
-  review was manual, and so was the Phase 15 final review (FINAL_REVIEW.md). The scan still waits for that
-  go-ahead; anything high or critical it finds is to be fixed before it is called done.
+- **The automated Claude Security scan has not run.** The owner approved it on 2026-10-06, but this development
+  environment does not provide the workflow runtime it needs. A second manual review ran instead (below). The scan
+  remains the next step in an environment that can run it.
 
 ## Out of scope
 

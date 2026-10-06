@@ -2,6 +2,21 @@
 
 Notable discoveries, dead ends and trade-offs, newest first. Not a changelog.
 
+## 2026-10-06: The OOM handler that could never run
+The release security review asked of each workload what the worst payload makes a worker do. For `memory`, the
+answer was in the Dockerfile, not the Java. The workload caught `OutOfMemoryError` and reported RESOURCE_EXHAUSTED,
+and a unit test proved it. But the image runs the JVM with `-XX:+ExitOnOutOfMemoryError`, which ends the process when
+the error is thrown, before any catch block runs. A three-line program confirmed it: exit 0 without the flag, exit 3
+with it. So in production one tenant's job could end a worker, and with it every other tenant's attempt there. The
+test passed because the test JVM did not have the flag. The workload now reserves its allocation from a budget of
+half the heap before allocating, and the new test runs it in a child JVM with the image's flags.
+
+The http workload had a quieter version of the same gap. Apache HttpClient retries a 429 or 503 once by default and
+honours Retry-After while doing so. A target answering `Retry-After: 99999999999999999` held the worker slot until
+the job's timeout, in a sleep nobody had written. With that retry disabled, the same header overflowed
+`Duration.toMillis` in the report path. The lesson in both cases: library and runtime defaults are part of the code
+under review.
+
 ## 2026-10-06: The final review measured what it doubted
 The Phase 15 review (FINAL_REVIEW.md) went through the brief's questions and checked each answer against something
 that ran, not against the docs. Three answers changed.

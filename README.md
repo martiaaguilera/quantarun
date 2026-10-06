@@ -142,7 +142,7 @@ are recorded only after commit, so a rolled-back placement counts nothing. Logs 
 
 ## Testing
 
-- **410 Java tests** (325 control plane, 85 worker) and **25 web tests**. Everything that touches SQL, locking or
+- **417 Java tests** (325 control plane, 92 worker) and **25 web tests**. Everything that touches SQL, locking or
   transactions runs against real PostgreSQL 18 in Testcontainers; the database is never mocked.
 - **Race tests** for every concurrency feature: 16 concurrent schedulers per policy, completion racing lease expiry,
   500 duplicate submissions, heartbeats racing the reaper, checkpoints racing recovery.

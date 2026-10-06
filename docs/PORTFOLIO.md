@@ -28,7 +28,7 @@ real PostgreSQL.
 - Built a PostgreSQL-coordinated distributed workload scheduler (Java 25, Spring Boot 4, explicit SQL) with
   lease-based crash recovery, resource-aware placement under six policies and deterministic policy replay. A killed
   worker's job was re-placed 25 ms after its lease expired and resumed from its last checkpoint.
-- Verified 22 concurrency and correctness invariants with 410 Java tests against real PostgreSQL (Testcontainers),
+- Verified 22 concurrency and correctness invariants with 417 Java tests against real PostgreSQL (Testcontainers),
   including property tests and a torture test that runs schedulers, crashing workers and lease recovery at once. It
   found and fixed a lease-fencing race; the race suites then passed 55 of 55 repeated runs.
 - Profiled the system end to end (JFR, `pg_stat_statements`, `EXPLAIN ANALYZE`) and replaced polling with signalled
