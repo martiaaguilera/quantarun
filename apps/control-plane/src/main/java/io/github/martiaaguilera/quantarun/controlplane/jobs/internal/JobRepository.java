@@ -100,29 +100,36 @@ public class JobRepository {
     public record IdempotencyRecord(Job job, byte[] requestHash) {}
 
     /**
-     * The overview's numbers in four short queries. The finished-in-the-last-hour counts scan {@code jobs}; fine for an
-     * overview refreshed every few seconds at this scale, and measured in Phase 13 if it is not.
+     * The overview's numbers in four short queries, each bounded by what it reads rather than by the history: unfinished
+     * jobs through their partial indexes, and recent windows through the V12 indexes. Totals over every job ever run
+     * would be a full scan per call, and the console asks up to once a second.
      */
     public JobSummary summary(@Nullable UUID projectId) {
         var scope = projectId == null ? "" : " AND j.project_id = :projectId";
-        var byStatus = new java.util.EnumMap<JobStatus, Long>(JobStatus.class);
+        var unfinished = new java.util.EnumMap<JobStatus, Long>(JobStatus.class);
         for (var status : JobStatus.values()) {
-            byStatus.put(status, 0L);
+            if (!status.isFinal()) {
+                unfinished.put(status, 0L);
+            }
         }
         bind(
-                        jdbc.sql("SELECT j.status, count(*) AS jobs FROM jobs j WHERE true" + scope
+                        jdbc.sql("SELECT j.status, count(*) AS jobs FROM jobs j"
+                                + " WHERE j.status IN ('QUEUED', 'SCHEDULED', 'RUNNING', 'RETRY_WAIT')" + scope
                                 + " GROUP BY j.status"),
                         projectId)
                 .query(rs -> {
-                    byStatus.put(JobStatus.valueOf(rs.getString("status")), rs.getLong("jobs"));
+                    unfinished.put(JobStatus.valueOf(rs.getString("status")), rs.getLong("jobs"));
                 });
         var finished = bind(jdbc.sql("""
                                 SELECT count(*) FILTER (WHERE j.status = 'SUCCEEDED') AS succeeded,
                                        count(*) FILTER (WHERE j.status = 'FAILED') AS failed,
-                                       count(*) FILTER (WHERE j.status = 'DEAD') AS dead
+                                       count(*) FILTER (WHERE j.status = 'DEAD') AS dead,
+                                       count(*) FILTER (WHERE j.status = 'CANCELLED') AS cancelled
                                 FROM jobs j WHERE j.finished_at > now() - interval '1 hour'
                                 """ + scope), projectId)
-                .query((rs, row) -> new long[] {rs.getLong("succeeded"), rs.getLong("failed"), rs.getLong("dead")})
+                .query((rs, row) -> new long[] {
+                    rs.getLong("succeeded"), rs.getLong("failed"), rs.getLong("dead"), rs.getLong("cancelled")
+                })
                 .single();
         var retries = bind(jdbc.sql("""
                                 SELECT count(*) FROM job_attempts a JOIN jobs j ON j.id = a.job_id
@@ -137,7 +144,7 @@ public class JobRepository {
                 .query(Double.class)
                 .optional()
                 .orElse(null);
-        return new JobSummary(byStatus, finished[0], finished[1], finished[2], retries, p95);
+        return new JobSummary(unfinished, finished[0], finished[1], finished[2], finished[3], retries, p95);
     }
 
     private static JdbcClient.StatementSpec bind(JdbcClient.StatementSpec statement, @Nullable UUID projectId) {

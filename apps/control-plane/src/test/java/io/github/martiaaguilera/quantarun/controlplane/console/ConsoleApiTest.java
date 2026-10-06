@@ -71,13 +71,18 @@ class ConsoleApiTest {
         submit(mine, "delay", 4);
         submit(mine, "delay", 4);
         submit(other, "delay", 4);
+        lifecycle.cancel(submit(mine, "delay", 4));
         fixture.place();
         var claimed = attempts.claim(worker.id(), 2);
         attempts.report(
                 worker.id(), claimedAttemptOf(claimed, succeeded), AttemptOutcome.SUCCEEDED, null, null, null, null);
 
         var asMember = body(get(mine, "/api/v1/overview").andExpect(status().isOk()));
-        assertThat(asMember.at("/jobs/byStatus/SUCCEEDED").asLong()).isEqualTo(1);
+        // Finished jobs are counted by recent window only: a total over all history would scan it on every call.
+        assertThat(asMember.at("/jobs/byStatus").propertyNames())
+                .containsExactlyInAnyOrder("QUEUED", "SCHEDULED", "RUNNING", "RETRY_WAIT");
+        assertThat(asMember.at("/jobs/succeededLastHour").asLong()).isEqualTo(1);
+        assertThat(asMember.at("/jobs/cancelledLastHour").asLong()).isEqualTo(1);
         assertThat(asMember.at("/jobs/queued").asLong()
                         + asMember.at("/jobs/running").asLong())
                 .isEqualTo(2);
@@ -86,7 +91,7 @@ class ConsoleApiTest {
         assertThat(asMember.get("fleet").isNull()).isTrue();
 
         var asAdmin = body(getAsAdmin("/api/v1/overview").andExpect(status().isOk()));
-        assertThat(asAdmin.at("/jobs/byStatus/SUCCEEDED").asLong()).isEqualTo(1);
+        assertThat(asAdmin.at("/jobs/succeededLastHour").asLong()).isEqualTo(1);
         assertThat(asAdmin.at("/jobs/queued").asLong()
                         + asAdmin.at("/jobs/running").asLong())
                 .isEqualTo(3);

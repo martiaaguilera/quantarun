@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 class OverviewController {
 
     /**
+     * @param byStatus unfinished jobs only, by status. Finished jobs appear in the last-hour counts.
      * @param successRate succeeded / (succeeded + failed + dead) over the last hour; null when nothing finished.
      * @param timeToStartP95Seconds 95th percentile from submission to start, over first attempts started in the last 15
      *     minutes. A job submitted with {@code notBefore} counts its deliberate wait too.
@@ -30,6 +31,7 @@ class OverviewController {
             long succeededLastHour,
             long failedLastHour,
             long deadLastHour,
+            long cancelledLastHour,
             @Nullable Double successRate,
             long retriesLastHour,
             @Nullable Double timeToStartP95Seconds) {}
@@ -56,7 +58,7 @@ class OverviewController {
     @GetMapping("/api/v1/overview")
     Overview overview(Caller caller) {
         var summary = jobs.summary(caller);
-        var counts = summary.byStatus();
+        var counts = summary.unfinished();
         var finished = summary.succeededLastHour() + summary.failedLastHour() + summary.deadLastHour();
         var jobOverview = new JobOverview(
                 counts,
@@ -65,6 +67,7 @@ class OverviewController {
                 summary.succeededLastHour(),
                 summary.failedLastHour(),
                 summary.deadLastHour(),
+                summary.cancelledLastHour(),
                 finished == 0 ? null : summary.succeededLastHour() / (double) finished,
                 summary.retriesLastHour(),
                 summary.timeToStartP95Seconds());

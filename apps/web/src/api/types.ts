@@ -203,12 +203,14 @@ export interface FairnessView {
 
 export interface Overview {
   jobs: {
-    byStatus: Record<JobStatus, number>
+    /** Unfinished jobs only; finished ones are counted over the last hour. */
+    byStatus: Record<'QUEUED' | 'RETRY_WAIT' | 'SCHEDULED' | 'RUNNING', number>
     queued: number
     running: number
     succeededLastHour: number
     failedLastHour: number
     deadLastHour: number
+    cancelledLastHour: number
     successRate: number | null
     retriesLastHour: number
     timeToStartP95Seconds: number | null

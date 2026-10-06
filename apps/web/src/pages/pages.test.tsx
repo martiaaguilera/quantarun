@@ -68,12 +68,13 @@ describe('JobsPage', () => {
 describe('OverviewPage', () => {
   const overview = {
     jobs: {
-      byStatus: { QUEUED: 3, RETRY_WAIT: 1, SCHEDULED: 2, RUNNING: 4, SUCCEEDED: 90, FAILED: 2, DEAD: 1, CANCELLED: 0 },
+      byStatus: { QUEUED: 3, RETRY_WAIT: 1, SCHEDULED: 2, RUNNING: 4 },
       queued: 4,
       running: 6,
       succeededLastHour: 9,
       failedLastHour: 1,
       deadLastHour: 0,
+      cancelledLastHour: 3,
       successRate: 0.9,
       retriesLastHour: 2,
       timeToStartP95Seconds: 1.25,
@@ -89,6 +90,7 @@ describe('OverviewPage', () => {
 
     expect(await screen.findByText('90.0 %')).toBeInTheDocument()
     expect(screen.getByText('1.25 s')).toBeInTheDocument()
+    expect(screen.getByText(/Finished in the last hour: 9 succeeded, 1 failed, 0 dead, 3 cancelled/)).toBeInTheDocument()
     expect(screen.getByText(/sign in with the operator token to see it/)).toBeInTheDocument()
   })
 })
