@@ -144,3 +144,23 @@ four screenshots. PORTFOLIO.md has the short versions.
 
 **Could Martí explain every decision?** INTERVIEW_GUIDE.md is written for that, from the real discoveries in
 ENGINEERING_LOG.md.
+
+## Release verification (2026-10-06)
+
+Before publishing, everything was taken from a clean checkout and checked against the brief, item by item, on a
+different machine from the one used for development (Windows 11, Docker Desktop, JDK 25.0.4).
+
+| Check | Result |
+|---|---|
+| `./mvnw verify` | 417 tests green (325 control plane, 92 worker), after the fix below |
+| `npm run check`, `npm audit` | 25 web tests green, build clean, 0 vulnerabilities |
+| `docker compose up --build --wait` | Six services healthy |
+| DEMO.md, end to end | Same shape: the staged job's worker was killed after its first checkpoint, the lease expired 13.6 s later, the job resumed on another worker after stage 0 and succeeded; all 12 jobs succeeded exactly once. The simulation gave the same fairness (0.462 vs 0.991) and the same two SHA-256 hashes as the rehearsal |
+| Brief, documentation list | `CONTRIBUTING.md` and `docs/API.md` were missing. Both written; every value in API.md was checked against the code and the running stack |
+| Brief, testing list | Playwright was missing: the console had component tests only. Five end-to-end tests now drive the console of the running stack, and CI runs them against the images it builds |
+| Brief v1 additions, README | No Mermaid diagram and no badges. Added |
+| README links | The OpenAPI link pointed at nginx, which answers with the console's SPA fallback; the document is served on 8080. Fixed |
+| Test reliability | Two tests failed on the slower machine: the test workers' only heartbeat aged past the 7 s LATE threshold. Explained and fixed without changing thresholds (finding 9, ENGINEERING_LOG) |
+
+Not changed: the screenshots live in `docs/images/` rather than the `docs/assets/` the v1 additions name, and were
+taken from a live run rather than by a Playwright script. They are real, and moving them would only break links.

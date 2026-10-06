@@ -68,7 +68,7 @@ flowchart LR
     w1["worker-cpu"] -- "HTTP: register, heartbeat,<br/>claim, checkpoint, report" --> cp
     w2["worker-mixed"] --> cp
     w3["worker-accel"] --> cp
-    cp -. "OTLP traces, metrics<br/>(optional overlay)" .-> otel["Jaeger · Prometheus"]
+    cp -. "traces (OTLP), metrics (scraped)<br/>optional overlay" .-> otel["Jaeger · Prometheus"]
     w1 -.-> otel
 ```
 
