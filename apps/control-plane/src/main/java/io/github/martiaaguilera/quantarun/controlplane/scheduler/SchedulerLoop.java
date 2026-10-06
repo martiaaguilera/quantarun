@@ -1,5 +1,6 @@
 package io.github.martiaaguilera.quantarun.controlplane.scheduler;
 
+import io.github.martiaaguilera.quantarun.controlplane.jobs.PlacementSignal;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -14,7 +15,8 @@ import org.springframework.dao.DataAccessException;
 
 /**
  * Runs scheduling cycles continuously on a fixed number of threads. A cycle that placed work runs again at once so a
- * backlog drains quickly; an idle cycle waits {@code idleDelay}, which bounds the polling load on an empty queue.
+ * backlog drains quickly; an idle cycle waits {@code idleDelay}, which bounds the polling load on an empty queue, or
+ * less when {@link PlacementSignal} reports a submission or freed capacity committed in this process.
  */
 class SchedulerLoop implements SmartLifecycle {
 
@@ -24,13 +26,15 @@ class SchedulerLoop implements SmartLifecycle {
     private final SchedulingCycle cycle;
     private final SchedulerProperties properties;
     private final MeterRegistry meters;
+    private final PlacementSignal signal;
     private final List<Thread> threads = new ArrayList<>();
     private volatile boolean running;
 
-    SchedulerLoop(SchedulingCycle cycle, SchedulerProperties properties, MeterRegistry meters) {
+    SchedulerLoop(SchedulingCycle cycle, SchedulerProperties properties, MeterRegistry meters, PlacementSignal signal) {
         this.cycle = cycle;
         this.properties = properties;
         this.meters = meters;
+        this.signal = signal;
     }
 
     @Override
@@ -48,12 +52,14 @@ class SchedulerLoop implements SmartLifecycle {
     private void loop() {
         while (running) {
             Duration pause;
+            var idle = false;
             try {
                 // Timed here, around the transactional call, so the duration includes the commit.
                 var started = System.nanoTime();
                 var result = cycle.runCycle(properties.policy());
                 recordCycle(System.nanoTime() - started, result.placed());
                 pause = result.placed() > 0 ? Duration.ZERO : properties.idleDelay();
+                idle = result.placed() == 0;
             } catch (DataAccessException e) {
                 // A failed cycle rolls back as a whole, leaving no partial placement; the next cycle simply retries.
                 log.atWarn().addKeyValue("error", e.getMessage()).log("Scheduling cycle failed; retrying");
@@ -65,7 +71,11 @@ class SchedulerLoop implements SmartLifecycle {
                 pause = FAILURE_DELAY;
             }
             try {
-                TimeUnit.MILLISECONDS.sleep(pause.toMillis());
+                if (idle) {
+                    signal.await(pause);
+                } else {
+                    TimeUnit.MILLISECONDS.sleep(pause.toMillis());
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;

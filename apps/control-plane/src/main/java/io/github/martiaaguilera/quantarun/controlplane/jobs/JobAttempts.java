@@ -111,6 +111,7 @@ public class JobAttempts {
     private final JobTracing tracing;
     private final JobMetrics metrics;
     private final JsonMapper json;
+    private final PlacementSignal placementSignal;
     private final RandomGenerator random = RandomGenerator.getDefault();
 
     JobAttempts(
@@ -123,7 +124,8 @@ public class JobAttempts {
             RetryPolicy retryPolicy,
             JobTracing tracing,
             JobMetrics metrics,
-            JsonMapper json) {
+            JsonMapper json,
+            PlacementSignal placementSignal) {
         this.attempts = attempts;
         this.checkpoints = checkpoints;
         this.jobs = jobs;
@@ -134,6 +136,7 @@ public class JobAttempts {
         this.tracing = tracing;
         this.metrics = metrics;
         this.json = json;
+        this.placementSignal = placementSignal;
     }
 
     /** The claimed attempts and their jobs' RUNNING transitions commit together. */
@@ -351,6 +354,8 @@ public class JobAttempts {
                 boundedResult(result),
                 decisionText);
         capacity.release(attempt.workerId(), attempt.cpuMillis(), attempt.memoryMib(), attempt.accelerators());
+        // The freed capacity may fit a waiting job, or this job's own immediate retry.
+        placementSignal.raiseAfterCommit();
 
         var delay = decision instanceof RetryPolicy.Decision.Retry(var retryDelay) ? retryDelay : null;
         jobs.applyAttemptOutcome(job.id(), job.status(), nextJobStatus, delay);
