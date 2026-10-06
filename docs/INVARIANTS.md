@@ -42,6 +42,7 @@ concurrency classes again and again (90 tests per run, including `ConcurrencyTor
 | 2026-10-04 | `272dbd6` | 20 | 20 passed | |
 | 2026-10-04 | `19aac78` | 20 | 20 passed | Torture totals: 240,655 snapshot audits of I1–I3, 17,909 placements, 1,287 leases lost, 262 reports refused as LEASE_EXPIRED, 282 worker crashes, 2,482 revives, 3,008 duplicate reports, 30,039 submissions (half of them duplicates), with no violation |
 
+| 2026-10-06 | `7fc5cfe` | 5 | 5 passed | After Phase 13 changed the scheduling cycle (batched waiting verdicts) and the claim path (waiting claims); 4 vCPUs at 2.10 GHz |
 Hardware: a cloud container with 4 vCPUs (Intel Xeon, 2.8 GHz) and 15 GB RAM, Linux 6.18, PostgreSQL 18 in
 Testcontainers. Command: `scripts/repeat-race-tests.sh 20 20`.
 
