@@ -17,6 +17,7 @@ import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerProperties;
 import io.github.martiaaguilera.quantarun.controlplane.workers.WorkerResources;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -112,6 +113,7 @@ public class SchedulingCycle {
         int placed = 0;
         int waiting = 0;
         int unschedulable = 0;
+        var stillWaiting = new ArrayList<PlacementDecision>();
         for (var decision : plan) {
             var job = jobsById.get(decision.job().id());
             var queueWaitMs =
@@ -127,10 +129,7 @@ public class SchedulingCycle {
                     placed++;
                 }
                 case WAITING_FOR_CAPACITY, WAITING_FOR_QUOTA, UNSCHEDULABLE -> {
-                    if (jobs.recordWaiting(job.id(), decision.outcome().name(), decision.reason())) {
-                        decisions.insert(decision, policy, null, queueWaitMs);
-                        logWaitingChange(decision);
-                    }
+                    stillWaiting.add(decision);
                     if (decision.outcome() == PlacementDecision.Outcome.UNSCHEDULABLE) {
                         unschedulable++;
                     } else {
@@ -139,10 +138,29 @@ public class SchedulingCycle {
                 }
             }
         }
+        recordWaiting(stillWaiting, policy, jobsById, now);
         if (!liveWorkers.isEmpty()) {
             fairShare.save(planned.virtualTimes(), planned.systemVirtualTime());
         }
         return new CycleResult(lockedJobs.size(), placed, waiting, unschedulable);
+    }
+
+    /** One statement for the whole window; a decision record only where the verdict changed. */
+    private void recordWaiting(
+            List<PlacementDecision> waiting, SchedulingPolicy policy, Map<UUID, Job> jobsById, Instant now) {
+        var changed = jobs.recordWaiting(waiting.stream()
+                .map(decision -> new JobPlacement.Waiting(
+                        decision.job().id(), decision.outcome().name(), decision.reason()))
+                .toList());
+        for (var decision : waiting) {
+            if (changed.contains(decision.job().id())) {
+                var job = jobsById.get(decision.job().id());
+                var queueWaitMs =
+                        Math.max(0, Duration.between(job.availableAt(), now).toMillis());
+                decisions.insert(decision, policy, null, queueWaitMs);
+                logWaitingChange(decision);
+            }
+        }
     }
 
     private static JobPlacement.WindowOrder windowOrder(SchedulingPolicy policy) {
