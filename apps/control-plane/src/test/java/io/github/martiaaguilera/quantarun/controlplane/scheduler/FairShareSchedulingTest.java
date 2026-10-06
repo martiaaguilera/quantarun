@@ -115,6 +115,7 @@ class FairShareSchedulingTest {
         // Asserted round by round: this test failed once in a full run with 200 of 320 served (ENGINEERING_LOG,
         // 2026-10-02), and a total alone cannot say which step stopped.
         for (int round = 0; round < 40; round++) {
+            fixture.heartbeatAllWorkers();
             var placed = cycle.runCycle(SchedulingPolicy.FAIR_SHARE);
             assertThat(placed.placed())
                     .as("round %d placed: %s, %s", round, placed, queueVerdicts())
